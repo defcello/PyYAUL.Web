@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block content %}
+	<div class="container py-3">
+		<div class="d-flex justify-content-between align-items-center mb-3">
+			<h3 class="title mb-0">All Groups</h3>
+			{% if group_create_allow %}
+				<form action="" method="POST" class="mb-0">
+					<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+					<input type="hidden" name="action" value="create">
+					<button type="submit" class="btn btn-primary">Create Group</button>
+				</form>
+			{% endif %}
+		</div>
+		<div class="box">
+			{% with messages = get_flashed_messages() %}
+				{% if messages %}
+					<div class="notification is-danger">
+						{{ messages[0] }}
+					</div>
+				{% endif %}
+			{% endwith %}
+			{% if authaccounts_groups_records %}
+				<div class="table-responsive">
+					<table class="table table-striped align-middle">
+						<thead>
+							<tr>
+								<th>ID</th>
+								<th>Group Name</th>
+								<th>Display Name</th>
+								<th>Created</th>
+								<th>Actions</th>
+							</tr>
+						</thead>
+						<tbody>
+							{% for record in authaccounts_groups_records %}
+								<tr>
+									<td>{{ record.id }}</td>
+									<td>{{ record.username }}</td>
+									<td>{{ record.name_display }}</td>
+									<td>{{ record.created }}</td>
+									<td>
+										{% if group_name_update_allow %}
+											<form action="" method="POST" class="d-inline">
+												<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+												<input type="hidden" name="group_id" value="{{ record.id }}">
+												<input type="hidden" name="action" value="rename">
+												<button type="submit" class="btn btn-outline-primary btn-sm">Rename</button>
+											</form>
+										{% endif %}
+										{% if group_privileges_update_allow %}
+											<form action="" method="POST" class="d-inline">
+												<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+												<input type="hidden" name="group_id" value="{{ record.id }}">
+												<input type="hidden" name="action" value="privileges">
+												<button type="submit" class="btn btn-outline-primary btn-sm">Privileges</button>
+											</form>
+										{% endif %}
+										{% if group_users_update_allow %}
+											<form action="" method="POST" class="d-inline">
+												<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+												<input type="hidden" name="group_id" value="{{ record.id }}">
+												<input type="hidden" name="action" value="members">
+												<button type="submit" class="btn btn-outline-primary btn-sm">Members</button>
+											</form>
+										{% endif %}
+									</td>
+								</tr>
+							{% endfor %}
+						</tbody>
+					</table>
+				</div>
+			{% else %}
+				<p class="text-muted mb-0">No groups found.</p>
+			{% endif %}
+		</div>
+	</div>
+{% endblock %}

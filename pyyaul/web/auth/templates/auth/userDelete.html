@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+	<div class="column is-4 is-offset-4">
+		<h3 class="title">Delete User</h3>
+		<div class="box">
+			{% with messages = get_flashed_messages() %}
+				{% if messages %}
+					<div class="notification is-danger">
+						<p>{{ messages[0] }}</p>
+					</div>
+				{% endif %}
+			{% endwith %}
+			{% if caller_is_super_auth %}
+				<form method="POST" action="{{ urlPost }}" class="needs-validation" novalidate>
+					<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+					<input type="hidden" name="user_id" value="{{ targetUserRecord.id }}" />
+					<h4 class="mt-4">Account Being Deleted</h4>
+					<div class="mb-3">
+						<label class="form-label" for="staticUsername">Username</label>
+						<input id="staticUsername" class="form-control" disabled="" type="text" readonly="" value="{{ targetUserRecord.username }}" />
+					</div>
+					<div class="mb-3">
+						<label class="form-label" for="staticUsername">Created</label>
+						<input id="staticUsername" class="form-control" disabled="" type="text" readonly="" value="{{ targetUserRecord.created }}" />
+					</div>
+					<h4 class="mt-4">Are you sure you want to proceed?</h4>
+					<div class="form-check form-switch mb-3">
+						<input id="input_user_confirmed_delete" class="form-check-input" name="user_confirmed_delete" onchange="toggleSubmitButton()" type="checkbox" value="yes" />
+						<label for="input_user_confirmed_delete" class="form-check-label">Yes, I want to delete this account.</label>
+					</div>
+					<div class="mt-4">
+						<button id="button_submit" class="btn btn-primary" type="submit" disabled="">Submit</button>
+						<a class="btn btn-secondary" href="{{ urlCancel }}">Cancel</a>
+					</div>
+				</form>
+			{% else %}
+				<h5>You must log in with a super-administrator account to delete other administrator accounts.</h5>
+				<div class="mt-4">
+					<button class="btn btn-primary" disabled="">Submit</button>
+					<a class="btn btn-secondary" href="{{ urlCancel }}">Cancel</a>
+				</div>
+			{% endif %}
+		</div>
+	</div>
+	
+	<script>
+		function toggleSubmitButton() {
+			var checkbox = document.getElementById('input_user_confirmed_delete');
+			var buttonSubmit = document.getElementById('button_submit');
+			buttonSubmit.disabled = !checkbox.checked;
+		}
+	</script>
+{% endblock %}

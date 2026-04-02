@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+	<div class="column is-4 is-offset-4">
+		<h3 class="title">Delete Privilege</h3>
+		<div class="box">
+			{% with messages = get_flashed_messages() %}
+				{% if messages %}
+					<div class="notification is-danger">
+						{{ messages[0] }}
+					</div>
+				{% endif %}
+			{% endwith %}
+			<p>Delete the privilege subtree rooted at <strong>{{ targetPrivilege_details['path_str'] }}</strong>?</p>
+			<p class="text-muted">Any descendant privileges under this node will also be deleted.</p>
+			<form method="POST" action="{{ urlPost }}">
+				<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+				<input name="privilege_id" type="hidden" value="{{ targetPrivilege_details['record'].id }}">
+				<input name="user_confirmed_delete" type="hidden" value="yes">
+				<button class="btn btn-danger" type="submit">Delete</button>
+				<a class="btn btn-secondary" href="{{ urlCancel }}">Cancel</a>
+			</form>
+		</div>
+	</div>
+{% endblock %}

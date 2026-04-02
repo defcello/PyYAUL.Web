@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block content %}
+	{% set isCreateMode = authaccounts_privilege_details is undefined or authaccounts_privilege_details is none %}
+	<div class="column is-4 is-offset-4">
+		<h3 class="title">{{ 'Create' if isCreateMode else 'Rename' }} Privilege</h3>
+		<div class="box">
+			{% with messages = get_flashed_messages() %}
+				{% if messages %}
+					<div class="notification is-danger">
+						<p>{{ messages[0] }}</p>
+					</div>
+				{% endif %}
+			{% endwith %}
+			<form method="POST" action="{{ urlPost }}" class="needs-validation" novalidate>
+				<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+				{% if isCreateMode %}
+					<input name="privilege_parent_id" type="hidden" value="{{ authaccounts_privilege_parent_details['record'].id }}">
+				{% else %}
+					<input name="privilege_id" type="hidden" value="{{ authaccounts_privilege_details['record'].id }}">
+				{% endif %}
+				<div class="mb-3">
+					<label class="form-label" for="input_privilege_name">Privilege Name</label>
+					<input id="input_privilege_name" class="form-control" name="privilege_name" required type="text" value="{{ '' if isCreateMode else authaccounts_privilege_details['record'].name }}">
+				</div>
+				<div class="mb-3">
+					<label class="form-label" for="static_target_path">Privilege Path</label>
+					<input id="static_target_path" class="form-control" disabled type="text" readonly value="{{ privilege_path_preview }}">
+				</div>
+				{% if not isCreateMode %}
+					<div class="mb-3">
+						<label class="form-label" for="static_privilege_created">Created</label>
+						<input id="static_privilege_created" class="form-control" disabled type="text" readonly value="{{ authaccounts_privilege_details['record'].created }}">
+					</div>
+				{% endif %}
+				<div class="mt-4">
+					<button class="btn btn-primary" type="submit">Submit</button>
+					<a class="btn btn-secondary" href="{{ urlCancel }}">Cancel</a>
+				</div>
+			</form>
+		</div>
+	</div>
+	<script>
+		(function () {
+			'use strict'
+			var forms = document.querySelectorAll('.needs-validation')
+			Array.prototype.slice.call(forms).forEach(function (form) {
+				form.addEventListener('submit', function (event) {
+					if (!form.checkValidity()) {
+						event.preventDefault()
+						event.stopPropagation()
+					}
+					form.classList.add('was-validated')
+				}, false)
+			})
+		})()
+	</script>
+{% endblock %}

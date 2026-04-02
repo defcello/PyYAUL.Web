@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block content %}
+	<div class="column is-6 is-offset-3">
+		<h3 class="title">Group Members</h3>
+		<div class="box">
+			{% with messages = get_flashed_messages() %}
+				{% if messages %}
+					<div class="notification is-danger">
+						{{ messages[0] }}
+					</div>
+				{% endif %}
+			{% endwith %}
+			<p><strong>Group:</strong> {{ authaccounts_group_record.username }}</p>
+			<p class="text-muted">View direct members and remove one or more entries from this group.</p>
+			{% if authaccounts_group_members %}
+				<form method="POST" action="{{ urlPost }}" class="group-remove-members-form">
+					<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+					<input type="hidden" name="group_id" value="{{ authaccounts_group_record.id }}">
+					<div class="table-responsive">
+						<table class="table table-striped align-middle">
+							<thead>
+								<tr>
+									<th></th>
+									<th>Type</th>
+									<th>Name</th>
+									<th>Display Name</th>
+									<th>Added</th>
+								</tr>
+							</thead>
+							<tbody>
+								{% for member in authaccounts_group_members %}
+									<tr>
+										<td>
+											{% if group_users_update_allow %}
+												<input class="form-check-input" type="checkbox" name="member_user_id" value="{{ member.user_id }}">
+											{% endif %}
+										</td>
+										<td>{{ 'Group' if member.is_group else 'User' }}</td>
+										<td>{{ member.username }}</td>
+										<td>{{ member.name_display }}</td>
+										<td>{{ member.created }}</td>
+									</tr>
+								{% endfor %}
+							</tbody>
+						</table>
+					</div>
+					<div class="mt-3">
+						{% if group_users_update_allow %}
+							<button type="submit" class="btn btn-outline-danger">Remove Selected Members</button>
+						{% endif %}
+						<a class="btn btn-secondary" href="{{ urlCancel }}">Back</a>
+					</div>
+				</form>
+			{% else %}
+				<p class="text-muted">This group has no direct members.</p>
+				<a class="btn btn-secondary" href="{{ urlCancel }}">Back</a>
+			{% endif %}
+		</div>
+	</div>
+	<script>
+		var form = document.querySelector('.group-remove-members-form');
+		if (form) {
+			form.addEventListener('submit', function (event) {
+				var selected = form.querySelectorAll('input[name="member_user_id"]:checked');
+				if (selected.length === 0) {
+					event.preventDefault();
+					window.alert('Select at least one member to remove.');
+					return;
+				}
+				if (!window.confirm('Remove the selected members from this group?')) {
+					event.preventDefault();
+				}
+			});
+		}
+	</script>
+{% endblock %}

@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+	<div class="column is-4 is-offset-4">
+		<h3 class="title">All Admin Accounts</h3>
+		<div class="box">
+			{% with messages = get_flashed_messages() %}
+				{% if messages %}
+					<div class="notification is-danger">
+						{{ messages[0] }}
+					</div>
+				{% endif %}
+			{% endwith %}
+			<div class="d-flex justify-content-between align-items-center mb-3">
+				<p class="mb-0 text-muted">Groups are created from the Groups page. Use Edit here to add a user or group to a group.</p>
+				{% if caller_is_super_auth %}
+					<a href="{{ urlUserCreate }}" class="btn btn-primary">Add User</a>
+				{% endif %}
+			</div>
+			<div class="table-responsive">
+				<table class="table table-striped align-middle">
+					<thead>
+						<tr>
+							<th scope="col">ID</th>
+							<th scope="col">Type</th>
+							<th scope="col">Username</th>
+							<th scope="col">Name</th>
+							<th scope="col">Email</th>
+							<th scope="col">Phone</th>
+							<th scope="col">Can Login</th>
+							<th scope="col">Is Disabled</th>
+							<th scope="col">Is Unlocked</th>
+							<th scope="col">Is Sudoer</th>
+							<th scope="col">Actions</th>
+						</tr>
+					</thead>
+					<tbody>
+						{% for record in authAccounts_users_records %}
+							<tr>
+								<td>{{ record.id }}</td>
+								<td>{{ 'Group' if record.is_group else 'User' }}</td>
+								<td>{{ record.username }}</td>
+								<td>{{ record.name_display }}</td>
+								<td>{{ record.email }}</td>
+								<td>{{ record.phone_sms }}</td>
+								<td>{{ 'Yes' if record.is_loginenabled else 'No' }}</td>
+								<td>{{ 'Yes' if record.is_disabled else 'No' }}</td>
+								<td>{{ 'Yes' if record.unlocked is none else 'No' }}</td>
+								<td>{{ 'Yes' if record.id in sudoer_user_ids else 'No' }}</td>
+								<td>
+									{% if authsession_session_record.wolc_authaccounts__user__id == record.id or caller_is_super_auth or group_users_update_allow %}
+										<form action="" method="POST" class="d-inline">
+											<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+											<input type="hidden" name="user_id" value="{{ record.id }}">
+											<input type="hidden" name="action" value="update">
+											<button type="submit" class="btn btn-warning btn-sm">Edit</button>
+										</form>
+									{% endif %}
+									{% if not record.is_group and (authsession_session_record.wolc_authaccounts__user__id == record.id or caller_is_super_auth) %}
+										<form action="" method="POST" class="d-inline">
+											<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+											<input type="hidden" name="user_id" value="{{ record.id }}">
+											<input type="hidden" name="action" value="resetPassword">
+											<button type="submit" class="btn btn-warning btn-sm">Reset Password</button>
+										</form>
+									{% endif %}
+									{% if caller_is_super_auth %}
+										<form action="" method="POST" class="d-inline">
+											<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+											<input type="hidden" name="user_id" value="{{ record.id }}">
+											<input type="hidden" name="action" value="delete">
+											<button type="submit" class="btn btn-warning btn-sm">Delete</button>
+										</form>
+									{% endif %}
+								</td>
+							</tr>
+						{% endfor %}
+					</tbody>
+				</table>
+			</div>
+		</div>
+	</div>
+{% endblock %}

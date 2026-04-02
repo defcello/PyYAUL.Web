@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block content %}
+	<div class="column is-4 is-offset-4">
+		<h3 class="title">All Privileges</h3>
+		<div class="box">
+			{% with messages = get_flashed_messages() %}
+				{% if messages %}
+					<div class="notification is-danger">
+						{{ messages[0] }}
+					</div>
+				{% endif %}
+			{% endwith %}
+			<table class="table table-striped align-middle">
+				<thead>
+					<tr>
+						<th scope="col">ID</th>
+						<th scope="col">Privilege Path</th>
+						<th scope="col">Actions</th>
+					</tr>
+				</thead>
+				<tbody>
+					{% for privilege in authaccounts_privileges_sorted %}
+						<tr>
+							<td>{{ privilege['record'].id }}</td>
+							<td>
+								<div style="padding-left: {{ privilege['depth'] * 1.5 }}rem;">
+									<div><strong>{{ privilege['record'].name }}</strong></div>
+									<div class="text-muted small">{{ privilege['path_str'] }}</div>
+								</div>
+							</td>
+							<td>
+								{% if privilege__privilege_create_allow %}
+									<form action="" method="POST" class="d-inline">
+										<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+										<input type="hidden" name="privilege_id" value="{{ privilege['record'].id }}">
+										<input type="hidden" name="action" value="create_subprivilege">
+										<button type="submit" class="btn btn-primary btn-sm">Create Child</button>
+									</form>
+								{% endif %}
+								{% if privilege__privilege_update_allow and privilege['record'].parent_id is not none %}
+									<form action="" method="POST" class="d-inline">
+										<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+										<input type="hidden" name="privilege_id" value="{{ privilege['record'].id }}">
+										<input type="hidden" name="action" value="update">
+										<button type="submit" class="btn btn-warning btn-sm">Rename</button>
+									</form>
+								{% endif %}
+								{% if privilege__privilege_delete_allow and privilege['record'].parent_id is not none %}
+									<form action="" method="POST" class="d-inline">
+										<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+										<input type="hidden" name="privilege_id" value="{{ privilege['record'].id }}">
+										<input type="hidden" name="action" value="delete">
+										<button type="submit" class="btn btn-danger btn-sm">Delete</button>
+									</form>
+								{% endif %}
+							</td>
+						</tr>
+					{% endfor %}
+				</tbody>
+			</table>
+		</div>
+	</div>
+{% endblock %}

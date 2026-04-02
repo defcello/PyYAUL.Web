@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="column is-4 is-offset-4">
+	<h3 class="title">Logout Success</h3>
+	<div class="box">
+		{% with messages = get_flashed_messages() %}
+			{% if messages %}
+				<div class="notification is-danger">
+					{{ messages[0] }}
+				</div>
+			{% endif %}
+		{% endwith %}
+		<h5>You have successfully logged out.  Please close the browser to further protect your data.</h5>
+	</div>
+</div>
+{% endblock %}

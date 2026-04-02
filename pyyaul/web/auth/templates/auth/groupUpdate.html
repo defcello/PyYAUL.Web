@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block content %}
+	<div class="column is-5 is-offset-3">
+		<h3 class="title">{% if isCreateMode %}Create Group{% elif group_mode == 'privileges' %}Group Privileges{% else %}Rename Group{% endif %}</h3>
+		<div class="box">
+			{% with messages = get_flashed_messages() %}
+				{% if messages %}
+					<div class="notification is-danger">
+						{{ messages[0] }}
+					</div>
+				{% endif %}
+			{% endwith %}
+			{% if isCreateMode or group_mode == 'rename' %}
+				<form method="POST" action="{{ urlPost }}" class="mb-4">
+					<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+					{% if not isCreateMode %}
+						<input type="hidden" name="group_id" value="{{ authaccounts_group_record.id }}">
+						<input type="hidden" name="mode" value="rename">
+						<input type="hidden" name="action" value="rename">
+					{% endif %}
+					<div class="mb-3">
+						<label class="form-label" for="input_group_name">Group Name</label>
+						<input id="input_group_name" class="form-control" name="group_name" type="text" value="{{ '' if isCreateMode else authaccounts_group_record.username }}">
+					</div>
+					<div class="mb-3">
+						<label class="form-label" for="input_group_display_name">Display Name</label>
+						<input id="input_group_display_name" class="form-control" name="group_display_name" type="text" value="{{ '' if isCreateMode else authaccounts_group_record.name_display }}">
+					</div>
+					<div class="mt-4">
+						{% if isCreateMode or group_name_update_allow %}
+							<button class="btn btn-primary" type="submit">{{ 'Create Group' if isCreateMode else 'Save Changes' }}</button>
+						{% endif %}
+						<a class="btn btn-secondary" href="{{ urlCancel }}">Cancel</a>
+					</div>
+				</form>
+			{% elif group_mode == 'privileges' %}
+				<p><strong>Group:</strong> {{ authaccounts_group_record.username }}</p>
+				<p class="text-muted">Manage explicit allow and deny rules for this group.</p>
+				{% if group_privileges_update_allow %}
+					<form method="POST" action="{{ urlPost }}" class="mb-4">
+						<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+						<input type="hidden" name="group_id" value="{{ authaccounts_group_record.id }}">
+						<input type="hidden" name="mode" value="privileges">
+						<input type="hidden" name="action" value="add_privilege_rule">
+						<div class="mb-3">
+							<label class="form-label" for="input_privilege_path">Privilege</label>
+							<input id="input_privilege_path" class="form-control" name="privilege_path" list="privilege_path_options" placeholder="Type to filter privileges">
+							<datalist id="privilege_path_options">
+								{% for privilege_details in authaccounts_privileges_sorted %}
+									<option value="{{ privilege_details.path_str }}"></option>
+								{% endfor %}
+							</datalist>
+						</div>
+						<div class="mb-3">
+							<div class="form-check">
+								<input class="form-check-input" type="radio" name="allow" id="allow_yes" value="allow" checked>
+								<label class="form-check-label" for="allow_yes">Allow</label>
+							</div>
+							<div class="form-check">
+								<input class="form-check-input" type="radio" name="allow" id="allow_no" value="deny">
+								<label class="form-check-label" for="allow_no">Deny</label>
+							</div>
+						</div>
+						<button class="btn btn-outline-primary" type="submit">Save Privilege Rule</button>
+						<a class="btn btn-secondary" href="{{ urlCancel }}">Back</a>
+					</form>
+				{% endif %}
+				{% if authaccounts_group_privilege_rules %}
+					<div class="table-responsive">
+						<table class="table table-sm align-middle">
+							<thead>
+								<tr>
+									<th>Decision</th>
+									<th>Privilege</th>
+									<th></th>
+								</tr>
+							</thead>
+							<tbody>
+								{% for rule in authaccounts_group_privilege_rules %}
+									<tr>
+										<td>{{ 'Allow' if rule.allow else 'Deny' }}</td>
+										<td>{{ rule.privilege_path_str }}</td>
+										<td>
+											{% if group_privileges_update_allow %}
+												<form method="POST" action="{{ urlPost }}" class="d-inline">
+													<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+													<input type="hidden" name="group_id" value="{{ authaccounts_group_record.id }}">
+													<input type="hidden" name="mode" value="privileges">
+													<input type="hidden" name="action" value="remove_privilege_rule">
+													<input type="hidden" name="privilege_id" value="{{ rule.privilege_id }}">
+													<button class="btn btn-outline-danger btn-sm" type="submit">Remove</button>
+												</form>
+											{% endif %}
+										</td>
+									</tr>
+								{% endfor %}
+							</tbody>
+						</table>
+					</div>
+				{% else %}
+					<p class="text-muted">This group has no explicit allow or deny rules.</p>
+				{% endif %}
+			{% endif %}
+		</div>
+	</div>
+{% endblock %}
