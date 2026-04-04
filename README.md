@@ -1,7 +1,12 @@
 # PyYAUL.Web
 
 A Flask + SQLAlchemy library for building authenticated web experiences.
-Part of the [PyYAUL](https://github.com/defcello/PyYAUL.Base) family.
+Part of the [PyYAUL](https://github.com/defcello/PyYAUL.Base) family. YAUL stands
+for "Yet Another Utility Library," a nod to YAML's original expansion, "Yet
+Another Markup Language."
+
+This package is the Python counterpart to
+[`goyaul-web`](https://github.com/defcello/goyaul-web).
 
 ## What's included
 
