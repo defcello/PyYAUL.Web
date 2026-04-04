@@ -28,6 +28,7 @@ class SchemaV0_Base(Version):
 
     class LoginMethod(Enum):
         Password = 'Username and Password'
+        Passkey = 'Passkey'
 
     def __init__(self, accountsSchemaName, sessionsSchemaName, *args, **kargs):
         self.accountsSchemaName = accountsSchemaName
@@ -64,6 +65,7 @@ class SchemaV0_Base(Version):
             Column('is_loginenabled', Boolean, nullable=False),  #Set to `FALSE` for user groups and automation accounts.
             Column('is_disabled', Boolean, nullable=False),  #Set to `TRUE` if the account has been disabled (cannot login, has no privileges).
             Column('unlocked', DateTime(timezone=True), nullable=True, server_default=None),  #Set to the date/time that the user's account becomes unlocked; NULL means they've never been locked.
+            Column('webauthn_user_id', sqlalchemy.LargeBinary, nullable=True),  #Opaque user handle for WebAuthn / passkeys.
             ForeignKeyConstraint(
                 ['creator_user_id'],
                 [f'{self.accountsSchemaName}.table_user.id'],
@@ -88,6 +90,15 @@ class SchemaV0_Base(Version):
             postgresql_where=and_(
                 table_user.c.deleted.is_(None)
                 , table_user.c.is_group.is_(True)
+            ),
+            unique=True,
+        )
+        Index(
+            'unique_webauthn_user_id_if_not_deleted',
+            table_user.c.webauthn_user_id,
+            postgresql_where=and_(
+                table_user.c.deleted.is_(None),
+                table_user.c.webauthn_user_id.is_not(None),
             ),
             unique=True,
         )
@@ -180,6 +191,29 @@ class SchemaV0_Base(Version):
             'unique_user_if_not_deleted',
             table_user_loginmethod_password.c.user_id,
             postgresql_where=table_user_loginmethod_password.c.deleted.is_(None),
+            unique=True,
+        )
+        #### `table_user_loginmethod_passkey` #####################################################################
+        #Expresses the user-specific details for the "Passkey" login method.
+        table_user_loginmethod_passkey = Table(
+            'table_user_loginmethod_passkey',
+            metadata,
+            Column('id', Integer, primary_key=True),
+            Column('creator_user_id', Integer, ForeignKey(f'{self.accountsSchemaName}.table_user.id'), nullable=False),
+            Column('created', DateTime(timezone=True), nullable=False, server_default=text("timezone('utc'::text, now())")),
+            Column('deleter_user_id', Integer, ForeignKey(f'{self.accountsSchemaName}.table_user.id')),
+            Column('deleted', DateTime(timezone=True)),
+            Column('user_id', Integer, ForeignKey(f'{self.accountsSchemaName}.table_user.id'), nullable=False),
+            Column('friendly_name', String(100), nullable=True),
+            Column('credential_id', sqlalchemy.LargeBinary, nullable=False),
+            Column('credential_json', JSON, nullable=False),
+            Column('last_used', DateTime(timezone=True), nullable=True),
+            schema=self.accountsSchemaName,
+        )
+        Index(
+            'unique_passkey_credential_id_if_not_deleted',
+            table_user_loginmethod_passkey.c.credential_id,
+            postgresql_where=table_user_loginmethod_passkey.c.deleted.is_(None),
             unique=True,
         )
         #### `table_group_user` ####################################################################
@@ -827,6 +861,8 @@ class SchemaV0_Base(Version):
                 ;
                 DELETE FROM {self.accountsSchemaName}.table_user_loginmethod_password
                 ;
+                DELETE FROM {self.accountsSchemaName}.table_user_loginmethod_passkey
+                ;
                 DELETE FROM {self.accountsSchemaName}.table_user  --Always last to avoid foreign key conflicts.
                 ;
             """))
@@ -851,6 +887,11 @@ class SchemaV0_Base(Version):
                 connection,
                 root__user_id,
                 self.LoginMethod.Password,
+            )
+            self.table_loginmethod__record_create(
+                connection,
+                root__user_id,
+                self.LoginMethod.Passkey,
             )
             self.table_user_loginmethod__record_create(
                 connection,
