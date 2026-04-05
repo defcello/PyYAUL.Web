@@ -1,12 +1,16 @@
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 from collections import deque
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import time
 
 import flask
 
 from pyyaul.web.auth.blueprint import (
+    _IP_RATE_MAX_ATTEMPTS,
+    _LOGIN_ACCOUNT_LOCKED_RESPONSE_MESSAGE,
+    _LOGIN_IP_RATE_LIMIT_RESPONSE_MESSAGE,
     _USER_RATE_LIMIT_RESPONSE_MESSAGE,
     _UserRateLimiter,
     BlueprintContext,
@@ -318,6 +322,7 @@ class Test_BlueprintContext_audit_log_errors(TestCase):
         )
         self.db.authaccounts_user_passwordHash_readByID.return_value = 'unused'
         self.db.authaccounts_loginmethod_id_readByName.return_value = 3
+        self.db.authaccounts_user_login_ip_attempts_recent_count.return_value = 0
         self.db.authsession_session_create.return_value = SimpleNamespace(
             wolc_authsession__session__id=17,
             wolc_authsession__session__cookie_id='cookie-123',
@@ -325,8 +330,7 @@ class Test_BlueprintContext_audit_log_errors(TestCase):
         )
         self.db.authaccounts_user_login_log.side_effect = RuntimeError('success log failed')
 
-        with patch('pyyaul.web.auth.blueprint._ip_rate_check_and_record', return_value=True), \
-             patch('bcrypt.checkpw', return_value=True):
+        with patch('bcrypt.checkpw', return_value=True):
             response = self.client.post('/auth/login', data={
                 'username_or_email': 'alice',
                 'password': 'secret',
@@ -346,11 +350,11 @@ class Test_BlueprintContext_audit_log_errors(TestCase):
         )
         self.db.authaccounts_user_passwordHash_readByID.return_value = 'unused'
         self.db.authaccounts_loginmethod_id_readByName.return_value = 3
+        self.db.authaccounts_user_login_ip_attempts_recent_count.return_value = 0
         self.db.authaccounts_user_login_consecutive_failures_count.return_value = 0
         self.db.authaccounts_user_login_log.side_effect = RuntimeError('failure log failed')
 
-        with patch('pyyaul.web.auth.blueprint._ip_rate_check_and_record', return_value=True), \
-             patch('pyyaul.web.auth.blueprint.time.sleep', return_value=None), \
+        with patch('pyyaul.web.auth.blueprint.time.sleep', return_value=None), \
              patch('bcrypt.checkpw', return_value=False):
             response = self.client.post('/auth/login', data={
                 'username_or_email': 'alice',
@@ -392,6 +396,7 @@ class Test_BlueprintContext_passkey_offer(TestCase):
         )
         self.db.authaccounts_user_passwordHash_readByID.return_value = 'unused'
         self.db.authaccounts_loginmethod_id_readByName.return_value = 3
+        self.db.authaccounts_user_login_ip_attempts_recent_count.return_value = 0
         self.db.authsession_session_create.return_value = SimpleNamespace(
             wolc_authsession__session__id=17,
             wolc_authsession__session__cookie_id='cookie-123',
@@ -403,8 +408,7 @@ class Test_BlueprintContext_passkey_offer(TestCase):
         )
         self.db.authaccounts_passkeys_readByUserID.return_value = []
 
-        with patch('pyyaul.web.auth.blueprint._ip_rate_check_and_record', return_value=True), \
-             patch('bcrypt.checkpw', return_value=True):
+        with patch('bcrypt.checkpw', return_value=True):
             response = self.client.post('/auth/login', data={
                 'username_or_email': 'alice',
                 'password': 'secret',
@@ -452,3 +456,81 @@ class Test_BlueprintContext_passkey_offer(TestCase):
         self.db.authaccounts_user_passkey_offer_dismissed_set.assert_not_called()
         with self.client.session_transaction() as session:
             self.assertTrue(session.get(self.blueprintContext.session_keys_passkey_offer_skip_str))
+
+
+class Test_BlueprintContext_login_flow(TestCase):
+
+    def setUp(self):
+        self.app = flask.Flask(__name__)
+        self.app.secret_key = 'testing'
+        self.db = MagicMock()
+        self.blueprintContext = BlueprintContext('auth', __name__, self.db)
+
+        @self.app.route('/')
+        def page_index():
+            return 'index'
+
+        self.app.register_blueprint(self.blueprintContext.blueprint)
+        self.client = self.app.test_client()
+        self.db.authaccounts_loginmethod_id_readByName.return_value = 3
+        self.db.authaccounts_user_login_ip_attempts_recent_count.return_value = 0
+
+    def test_ip_rate_limit_returns_429_without_user_lookup(self):
+        self.db.authaccounts_user_login_ip_attempts_recent_count.return_value = _IP_RATE_MAX_ATTEMPTS
+
+        response = self.client.post('/auth/login', data={
+            'username_or_email': 'alice',
+            'password': 'secret',
+        })
+
+        self.assertEqual(429, response.status_code)
+        self.assertEqual(_LOGIN_IP_RATE_LIMIT_RESPONSE_MESSAGE, response.get_data(as_text=True))
+        self.db.authaccounts_user_readByEmailOrUsername.assert_not_called()
+        self.db.authaccounts_user_login_log.assert_called_once()
+        self.assertTrue(self.db.authaccounts_user_login_log.call_args.kwargs['loginmethod_details']['rate_limited'])
+
+    def test_wrong_password_fifth_failure_sets_future_lockout(self):
+        self.db.authaccounts_user_readByEmailOrUsername.return_value = SimpleNamespace(
+            id=5,
+            is_loginenabled=True,
+            is_disabled=False,
+            unlocked=None,
+        )
+        self.db.authaccounts_user_passwordHash_readByID.return_value = 'unused'
+        self.db.authaccounts_user_login_consecutive_failures_count.return_value = 4
+        self.db.authaccounts_user_login_lockout_count.return_value = 0
+
+        with patch('pyyaul.web.auth.blueprint.time.sleep', return_value=None), \
+             patch('bcrypt.checkpw', return_value=False):
+            response = self.client.post('/auth/login', data={
+                'username_or_email': 'alice',
+                'password': 'wrong',
+            })
+
+        self.assertEqual(302, response.status_code)
+        self.db.authaccounts_user_unlocked_set.assert_called_once()
+        unlock_at = self.db.authaccounts_user_unlocked_set.call_args.args[1]
+        self.assertGreater(unlock_at, datetime.now(timezone.utc))
+        self.assertEqual(
+            unlock_at,
+            self.db.authaccounts_user_login_log.call_args.kwargs['unlocked'],
+        )
+
+    def test_locked_account_returns_account_locked_response_without_incrementing_failures(self):
+        self.db.authaccounts_user_readByEmailOrUsername.return_value = SimpleNamespace(
+            id=5,
+            is_loginenabled=True,
+            is_disabled=False,
+            unlocked=datetime.now(timezone.utc) + timedelta(minutes=5),
+        )
+
+        with patch('pyyaul.web.auth.blueprint.time.sleep', return_value=None):
+            response = self.client.post('/auth/login', data={
+                'username_or_email': 'alice',
+                'password': 'wrong',
+            })
+
+        self.assertEqual(423, response.status_code)
+        self.assertEqual(_LOGIN_ACCOUNT_LOCKED_RESPONSE_MESSAGE, response.get_data(as_text=True))
+        self.db.authaccounts_user_login_consecutive_failures_count.assert_not_called()
+        self.db.authaccounts_user_unlocked_set.assert_not_called()

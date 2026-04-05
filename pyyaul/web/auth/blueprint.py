@@ -83,12 +83,11 @@ _LOGIN_MAX_CONSECUTIVE_FAILURES = 5
 _LOGIN_LOCKOUT_DURATIONS_MINUTES = [5, 30, 120, 1440]  # 5 min, 30 min, 2 hr, 24 hr
 _LOGIN_FAILURE_RESPONSE_DELAY_SECONDS = 0.5
 
-# In-memory per-IP rate limiter (sliding window). Resets on server restart.
-_ip_attempt_lock = threading.Lock()
-_ip_attempt_log: dict = {}   # ip (str) -> deque of UTC POSIX timestamps
 _IP_RATE_WINDOW_SECONDS = 300   # 5-minute sliding window
 _IP_RATE_MAX_ATTEMPTS = 20      # max login attempts per IP per window
 _USER_RATE_LIMIT_RESPONSE_MESSAGE = 'Too many requests. Please try again later.'
+_LOGIN_IP_RATE_LIMIT_RESPONSE_MESSAGE = 'Too many login attempts from your network. Please wait a few minutes before trying again.'
+_LOGIN_ACCOUNT_LOCKED_RESPONSE_MESSAGE = 'This account is temporarily locked. Please try again later.'
 _AUTH_POST_RATE_MAX_REQUESTS = 10
 _AUTH_POST_RATE_WINDOW_SECONDS = 60
 
@@ -171,19 +170,6 @@ def _webauthn_adapter_make():
 _WEBAUTHN_ADAPTER = _webauthn_adapter_make()
 
 
-def _ip_rate_check_and_record(ip :str) ->bool:
-    """
-    Records this login attempt from `ip` and returns `True` if the IP is within
-    the allowed rate limit, or `False` if it has exceeded it.
-    """
-    now_ts = datetime.now(timezone.utc).timestamp()
-    cutoff = now_ts - _IP_RATE_WINDOW_SECONDS
-    with _ip_attempt_lock:
-        q = _ip_attempt_log.setdefault(ip, deque())
-        while q and q[0] < cutoff:  # evict expired entries
-            q.popleft()
-        q.append(now_ts)
-        return len(q) <= _IP_RATE_MAX_ATTEMPTS
 # --- End login brute-force protection ---
 
 
@@ -1046,11 +1032,34 @@ class BlueprintContext:
     def page_login(self):
         flaskResponse = flask.make_response()
         if flask.request.method == 'POST':  #User provided login details.
+            # Fetch the login method ID once so rate limiting and audit logging stay aligned.
+            try:
+                loginmethod_id = self.dbModelContext.authaccounts_loginmethod_id_readByName(
+                    self.dbModelContext.dbSchema.LoginMethod.Password.value
+                )
+            except ValueError:
+                loginmethod_id = None
+
             # --- IP rate limiting (distributed brute-force mitigation) ---
             client_ip = flask.request.remote_addr or ''
-            if not _ip_rate_check_and_record(client_ip):
-                flask.flash('Too many login attempts from your network. Please wait a few minutes before trying again.')
-                return flask.redirect(flask.url_for(f'{self.blueprint.name}.page_login'))
+            login_details = {
+                'ip': client_ip,
+                'user_agent': flask.request.user_agent.string,
+            }
+            if (
+                    loginmethod_id is not None
+                    and self.dbModelContext.authaccounts_user_login_ip_attempts_recent_count(
+                        client_ip,
+                        _IP_RATE_WINDOW_SECONDS,
+                        loginmethod_id=loginmethod_id,
+                    ) >= _IP_RATE_MAX_ATTEMPTS
+            ):
+                self._authaccounts_user_login_log(
+                    loginmethod_id=loginmethod_id,
+                    is_success=False,
+                    loginmethod_details={**login_details, 'rate_limited': True},
+                )
+                return flask.make_response(_LOGIN_IP_RATE_LIMIT_RESPONSE_MESSAGE, 429)
 
             now_utc = datetime.now(timezone.utc)
             user_record = None
@@ -1088,24 +1097,11 @@ class BlueprintContext:
                         except KeyError:  #User didn't provide password in the form.
                             passwordMatched = False
 
-            # Fetch the loginmethod ID once for audit logging.
-            try:
-                loginmethod_id = self.dbModelContext.authaccounts_loginmethod_id_readByName(
-                    self.dbModelContext.dbSchema.LoginMethod.Password.value
-                )
-            except ValueError:
-                loginmethod_id = None
-
             already_locked = (
                 user_record is not None
                 and user_record.unlocked is not None
                 and user_record.unlocked > now_utc
             )
-
-            login_details = {
-                'ip': flask.request.remote_addr,
-                'user_agent': flask.request.user_agent.string,
-            }
 
             if user_record is not None and passwordMatched:  #User has been authenticated.
                 persistCookies = True if (flask.request.form.get('persistCookies') == 'yes') else False
@@ -1155,8 +1151,11 @@ class BlueprintContext:
                         loginmethod_details=login_details,
                     )
 
-                flask.flash('The provided login details could not be verified.  Please check your login details and try again.')
-                flaskResponse = flask.redirect(flask.url_for(f'{self.blueprint.name}.page_login'))
+                if already_locked:
+                    flaskResponse = flask.make_response(_LOGIN_ACCOUNT_LOCKED_RESPONSE_MESSAGE, 423)
+                else:
+                    flask.flash('The provided login details could not be verified.  Please check your login details and try again.')
+                    flaskResponse = flask.redirect(flask.url_for(f'{self.blueprint.name}.page_login'))
         else:  #User either has an active session or needs to be taken to the login form.
             try:
                 authsession_session_record = self.dbModelContext.authsession_session_readByCookieID(

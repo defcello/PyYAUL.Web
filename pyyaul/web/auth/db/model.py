@@ -1966,6 +1966,38 @@ class DBModelContext:
             ).scalar_one()
         return int(result)
 
+    def authaccounts_user_login_ip_attempts_recent_count(
+            self,
+            ip :str,
+            window_seconds :int,
+            loginmethod_id :int|None =None,
+    ) -> int:
+        """
+        Returns the number of login attempts from `ip` within the recent sliding
+        window stored in `table_user_login`.
+
+        When `loginmethod_id` is provided, the count is restricted to that login
+        method so password login throttling remains isolated from other flows.
+        """
+        dbORM = self.dbORM_authAccounts_RO
+        sql = f"""
+            SELECT COUNT(*)
+                FROM {self.dbSchema.accountsSchemaName}.table_user_login
+                WHERE COALESCE(loginmethod_details->>'ip', '') = :ip
+                    AND created >= timezone('utc', now()) - make_interval(secs => :window_seconds)
+        """
+        params = {
+            'ip': ip,
+            'window_seconds': int(window_seconds),
+        }
+        if loginmethod_id is not None:
+            sql += "\n                    AND loginmethod_id = :loginmethod_id"
+            params['loginmethod_id'] = int(loginmethod_id)
+        sql += "\n                ;"
+        with dbORM.session() as dbSession:
+            result = dbSession.execute(text(sql), params).scalar_one()
+        return int(result)
+
     def authaccounts_user_unlocked_set(self, user_id :int, unlocked) ->None:
         """
         Sets `table_user.unlocked` for `user_id`.

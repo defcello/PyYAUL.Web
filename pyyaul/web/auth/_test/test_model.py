@@ -237,3 +237,46 @@ class Test_DBModelContext_authaccounts_user_allowPrivilege_read(TestCase):
 
 		on_log_error.assert_called_once()
 		self.assertIsInstance(on_log_error.call_args.args[0], RuntimeError)
+
+
+class Test_DBModelContext_authaccounts_user_login_ip_attempts_recent_count(TestCase):
+
+	def setUp(self):
+		from pyyaul.web.auth.db.model import DBModelContext
+		self.DBModelContext = DBModelContext
+
+	def _make_ctx(self, scalar_value):
+		session = MagicMock()
+		session.execute.return_value = MagicMock(scalar_one=MagicMock(return_value=scalar_value))
+		session_cm = MagicMock()
+		session_cm.__enter__.return_value = session
+		session_cm.__exit__.return_value = None
+		orm = MagicMock()
+		orm.session.return_value = session_cm
+		schema = SimpleNamespace(accountsSchemaName='auth', sessionsSchemaName='sessions')
+		ctx = self.DBModelContext(orm, orm, orm, orm, schema)
+		return ctx, session
+
+	def test_filters_by_ip_window_and_loginmethod_when_provided(self):
+		ctx, session = self._make_ctx(7)
+
+		count = ctx.authaccounts_user_login_ip_attempts_recent_count('203.0.113.9', 300, loginmethod_id=5)
+
+		self.assertEqual(7, count)
+		sql = str(session.execute.call_args.args[0])
+		params = session.execute.call_args.args[1]
+		self.assertIn("loginmethod_details->>'ip'", sql)
+		self.assertIn('make_interval(secs => :window_seconds)', sql)
+		self.assertIn('loginmethod_id = :loginmethod_id', sql)
+		self.assertEqual({'ip': '203.0.113.9', 'window_seconds': 300, 'loginmethod_id': 5}, params)
+
+	def test_loginmethod_filter_is_optional(self):
+		ctx, session = self._make_ctx(2)
+
+		count = ctx.authaccounts_user_login_ip_attempts_recent_count('203.0.113.9', 60)
+
+		self.assertEqual(2, count)
+		sql = str(session.execute.call_args.args[0])
+		params = session.execute.call_args.args[1]
+		self.assertNotIn('loginmethod_id = :loginmethod_id', sql)
+		self.assertEqual({'ip': '203.0.113.9', 'window_seconds': 60}, params)
