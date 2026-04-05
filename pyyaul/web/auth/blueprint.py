@@ -348,12 +348,36 @@ class BlueprintContext:
 
     def _app_hooks_register(self, setup_state):
         app = setup_state.app
+        csrf_installed = app.extensions.setdefault('pyyaul.web.csrf', False)
+        if not csrf_installed:
+            app.before_request(self._csrf_protect)
+            app.context_processor(self._csrf_context)
+            app.extensions['pyyaul.web.csrf'] = True
         request_logging_installed = app.extensions.setdefault('pyyaul.web.request_logging', False)
         if request_logging_installed:
             return
         app.before_request(self._requestLog_start)
         app.after_request(self._requestLog_finish)
         app.extensions['pyyaul.web.request_logging'] = True
+
+    def _csrf_token_ensure(self):
+        if 'csrf_token' not in flask.session:
+            flask.session['csrf_token'] = secrets.token_hex(32)
+        return flask.session['csrf_token']
+
+    def _csrf_context(self):
+        return {'csrf_token': self._csrf_token_ensure()}
+
+    def _csrf_protect(self):
+        token = self._csrf_token_ensure()
+        if flask.request.method != 'POST':
+            return None
+        if flask.request.is_json:
+            return None
+        submitted = flask.request.form.get('csrf_token')
+        if not submitted or not secrets.compare_digest(token, submitted):
+            flask.abort(403)
+        return None
 
     def _requestLog_start(self):
         setattr(flask.g, _REQUEST_START_TIME_KEY, time.perf_counter())

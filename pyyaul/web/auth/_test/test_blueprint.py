@@ -21,6 +21,12 @@ from pyyaul.web.auth.blueprint import (
 )
 
 
+def _csrf_token_seed(client, token='test-csrf-token'):
+    with client.session_transaction() as session:
+        session['csrf_token'] = token
+    return token
+
+
 class Test_flaskResponse_securityHeaders_set(TestCase):
 
     def setUp(self):
@@ -113,6 +119,56 @@ class Test_BlueprintContext_security_headers(TestCase):
 
         self.assertEqual(201, response.status_code)
         self.assertRegex(captured_logs.output[0], r'INFO:pyyaul\.web\.request:GET /probe 201 \d+ms')
+
+
+class Test_BlueprintContext_csrf(TestCase):
+
+    def setUp(self):
+        self.app = flask.Flask(__name__)
+        self.app.secret_key = 'testing'
+        self.blueprintContext = BlueprintContext('auth', __name__, MagicMock())
+
+        @self.app.route('/probe-form', methods=['POST'])
+        def page_probe_form():
+            return 'ok'
+
+        @self.app.route('/probe-json', methods=['POST'])
+        def page_probe_json():
+            return flask.jsonify({'ok': True})
+
+        @self.app.route('/probe-token', methods=['GET'])
+        def page_probe_token():
+            return flask.render_template_string('<input value="{{ csrf_token }}">')
+
+        self.app.register_blueprint(self.blueprintContext.blueprint)
+        self.client = self.app.test_client()
+
+    def test_context_processor_exposes_csrf_token(self):
+        response = self.client.get('/probe-token')
+
+        self.assertEqual(200, response.status_code)
+        self.assertRegex(response.get_data(as_text=True), r'value="[0-9a-f]{64}"')
+
+    def test_form_post_with_valid_csrf_token_passes(self):
+        self.client.get('/probe-token')
+        with self.client.session_transaction() as session:
+            csrf_token = session['csrf_token']
+
+        response = self.client.post('/probe-form', data={'csrf_token': csrf_token})
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual('ok', response.get_data(as_text=True))
+
+    def test_form_post_without_csrf_token_is_rejected(self):
+        response = self.client.post('/probe-form', data={})
+
+        self.assertEqual(403, response.status_code)
+
+    def test_json_post_bypasses_csrf_form_requirement(self):
+        response = self.client.post('/probe-json', json={'hello': 'world'})
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual({'ok': True}, response.get_json())
 
 
 class Test_flaskApp_proxyFix_apply(TestCase):
@@ -288,6 +344,7 @@ class Test_BlueprintContext_audit_log_errors(TestCase):
 
         self.app.register_blueprint(self.blueprintContext.blueprint)
         self.client = self.app.test_client()
+        self.csrf_token = _csrf_token_seed(self.client)
 
     def test_authSessionPrivilegeRequired_forwards_callback(self):
         self.blueprintContext._authsession_session_record_read = MagicMock(
@@ -332,6 +389,7 @@ class Test_BlueprintContext_audit_log_errors(TestCase):
 
         with patch('bcrypt.checkpw', return_value=True):
             response = self.client.post('/auth/login', data={
+                'csrf_token': self.csrf_token,
                 'username_or_email': 'alice',
                 'password': 'secret',
             })
@@ -357,6 +415,7 @@ class Test_BlueprintContext_audit_log_errors(TestCase):
         with patch('pyyaul.web.auth.blueprint.time.sleep', return_value=None), \
              patch('bcrypt.checkpw', return_value=False):
             response = self.client.post('/auth/login', data={
+                'csrf_token': self.csrf_token,
                 'username_or_email': 'alice',
                 'password': 'wrong',
             })
@@ -386,6 +445,7 @@ class Test_BlueprintContext_passkey_offer(TestCase):
 
         self.app.register_blueprint(self.blueprintContext.blueprint)
         self.client = self.app.test_client()
+        self.csrf_token = _csrf_token_seed(self.client)
 
     def test_password_login_redirects_to_passkey_offer_when_eligible(self):
         self.db.authaccounts_user_readByEmailOrUsername.return_value = SimpleNamespace(
@@ -410,6 +470,7 @@ class Test_BlueprintContext_passkey_offer(TestCase):
 
         with patch('bcrypt.checkpw', return_value=True):
             response = self.client.post('/auth/login', data={
+                'csrf_token': self.csrf_token,
                 'username_or_email': 'alice',
                 'password': 'secret',
             })
@@ -430,7 +491,10 @@ class Test_BlueprintContext_passkey_offer(TestCase):
         )
         self.db.authaccounts_passkeys_readByUserID.return_value = []
 
-        response = self.client.post('/auth/passkey-offer', data={'action': 'dismiss'})
+        response = self.client.post('/auth/passkey-offer', data={
+            'csrf_token': self.csrf_token,
+            'action': 'dismiss',
+        })
 
         self.assertEqual(302, response.status_code)
         self.assertTrue(response.headers['Location'].endswith('/'))
@@ -449,7 +513,10 @@ class Test_BlueprintContext_passkey_offer(TestCase):
         )
         self.db.authaccounts_passkeys_readByUserID.return_value = []
 
-        response = self.client.post('/auth/passkey-offer', data={'action': 'later'})
+        response = self.client.post('/auth/passkey-offer', data={
+            'csrf_token': self.csrf_token,
+            'action': 'later',
+        })
 
         self.assertEqual(302, response.status_code)
         self.assertTrue(response.headers['Location'].endswith('/'))
@@ -472,6 +539,7 @@ class Test_BlueprintContext_login_flow(TestCase):
 
         self.app.register_blueprint(self.blueprintContext.blueprint)
         self.client = self.app.test_client()
+        self.csrf_token = _csrf_token_seed(self.client)
         self.db.authaccounts_loginmethod_id_readByName.return_value = 3
         self.db.authaccounts_user_login_ip_attempts_recent_count.return_value = 0
 
@@ -479,6 +547,7 @@ class Test_BlueprintContext_login_flow(TestCase):
         self.db.authaccounts_user_login_ip_attempts_recent_count.return_value = _IP_RATE_MAX_ATTEMPTS
 
         response = self.client.post('/auth/login', data={
+            'csrf_token': self.csrf_token,
             'username_or_email': 'alice',
             'password': 'secret',
         })
@@ -503,6 +572,7 @@ class Test_BlueprintContext_login_flow(TestCase):
         with patch('pyyaul.web.auth.blueprint.time.sleep', return_value=None), \
              patch('bcrypt.checkpw', return_value=False):
             response = self.client.post('/auth/login', data={
+                'csrf_token': self.csrf_token,
                 'username_or_email': 'alice',
                 'password': 'wrong',
             })
@@ -526,6 +596,7 @@ class Test_BlueprintContext_login_flow(TestCase):
 
         with patch('pyyaul.web.auth.blueprint.time.sleep', return_value=None):
             response = self.client.post('/auth/login', data={
+                'csrf_token': self.csrf_token,
                 'username_or_email': 'alice',
                 'password': 'wrong',
             })
