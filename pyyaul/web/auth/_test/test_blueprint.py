@@ -1,6 +1,7 @@
 from unittest import TestCase
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from collections import deque
+from types import SimpleNamespace
 import time
 
 import flask
@@ -201,3 +202,102 @@ class Test_BlueprintContext_userRateLimit(TestCase):
             response = page_probe()
 
         self.assertEqual('ok', response)
+
+
+class Test_BlueprintContext_audit_log_errors(TestCase):
+
+    def setUp(self):
+        self.app = flask.Flask(__name__)
+        self.app.secret_key = 'testing'
+        self.on_log_error = MagicMock()
+        self.db = MagicMock()
+        self.blueprintContext = BlueprintContext(
+            'auth',
+            __name__,
+            self.db,
+            on_log_error=self.on_log_error,
+        )
+
+        @self.app.route('/')
+        def page_index():
+            return 'index'
+
+        self.app.register_blueprint(self.blueprintContext.blueprint)
+        self.client = self.app.test_client()
+
+    def test_authSessionPrivilegeRequired_forwards_callback(self):
+        self.blueprintContext._authsession_session_record_read = MagicMock(
+            return_value=SimpleNamespace(
+                wolc_authaccounts__user__id=7,
+                wolc_authsession__session__id=11,
+            )
+        )
+        self.db.authaccounts_user_allowPrivilege_read.return_value = True
+
+        @self.blueprintContext.authSessionPrivilegeRequired(('sudo',))
+        def page_probe(**_kwargs):
+            return 'ok'
+
+        with self.app.test_request_context('/secure', method='GET'):
+            response = page_probe()
+
+        self.assertEqual('ok', response)
+        self.db.authaccounts_user_allowPrivilege_read.assert_called_once_with(
+            7,
+            ('sudo',),
+            session_id=11,
+            on_log_error=self.on_log_error,
+        )
+
+    def test_login_success_suppresses_log_write_failure_and_invokes_callback(self):
+        self.db.authaccounts_user_readByEmailOrUsername.return_value = SimpleNamespace(
+            id=5,
+            is_loginenabled=True,
+            is_disabled=False,
+            unlocked=None,
+        )
+        self.db.authaccounts_user_passwordHash_readByID.return_value = 'unused'
+        self.db.authaccounts_loginmethod_id_readByName.return_value = 3
+        self.db.authsession_session_create.return_value = SimpleNamespace(
+            wolc_authsession__session__id=17,
+            wolc_authsession__session__cookie_id='cookie-123',
+            wolc_authaccounts__user__id=5,
+        )
+        self.db.authaccounts_user_login_log.side_effect = RuntimeError('success log failed')
+
+        with patch('pyyaul.web.auth.blueprint._ip_rate_check_and_record', return_value=True), \
+             patch('bcrypt.checkpw', return_value=True):
+            response = self.client.post('/auth/login', data={
+                'username_or_email': 'alice',
+                'password': 'secret',
+            })
+
+        self.assertEqual(302, response.status_code)
+        self.assertTrue(response.headers['Location'].endswith('/'))
+        self.on_log_error.assert_called_once()
+        self.assertIsInstance(self.on_log_error.call_args.args[0], RuntimeError)
+
+    def test_login_failure_suppresses_log_write_failure_and_invokes_callback(self):
+        self.db.authaccounts_user_readByEmailOrUsername.return_value = SimpleNamespace(
+            id=5,
+            is_loginenabled=True,
+            is_disabled=False,
+            unlocked=None,
+        )
+        self.db.authaccounts_user_passwordHash_readByID.return_value = 'unused'
+        self.db.authaccounts_loginmethod_id_readByName.return_value = 3
+        self.db.authaccounts_user_login_consecutive_failures_count.return_value = 0
+        self.db.authaccounts_user_login_log.side_effect = RuntimeError('failure log failed')
+
+        with patch('pyyaul.web.auth.blueprint._ip_rate_check_and_record', return_value=True), \
+             patch('pyyaul.web.auth.blueprint.time.sleep', return_value=None), \
+             patch('bcrypt.checkpw', return_value=False):
+            response = self.client.post('/auth/login', data={
+                'username_or_email': 'alice',
+                'password': 'wrong',
+            })
+
+        self.assertEqual(302, response.status_code)
+        self.assertTrue(response.headers['Location'].endswith('/auth/login'))
+        self.on_log_error.assert_called_once()
+        self.assertIsInstance(self.on_log_error.call_args.args[0], RuntimeError)

@@ -190,7 +190,7 @@ class Test_DBModelContext_authaccounts_user_allowPrivilege_read(TestCase):
 		self.assertFalse(allowed)
 		self.assertEqual(session.execute.call_count, 1)
 		self.assertIn('function_user_has_privilege(', str(session.execute.call_args_list[0].args[0]))
-		ctx.authaccounts_privilege_log_write.assert_called_once_with(11, 7, False, allow_rule_id=None)
+		ctx.authaccounts_privilege_log_write.assert_called_once_with(11, 7, False, allow_rule_id=None, on_log_error=None)
 
 	def test_allowed_with_session_fetches_rule_id_for_logging(self):
 		ctx, session = self._make_ctx([
@@ -204,4 +204,36 @@ class Test_DBModelContext_authaccounts_user_allowPrivilege_read(TestCase):
 		self.assertEqual(session.execute.call_count, 2)
 		self.assertIn('function_user_has_privilege(', str(session.execute.call_args_list[0].args[0]))
 		self.assertIn('function_user_has_privilege_nocache_with_rule(', str(session.execute.call_args_list[1].args[0]))
-		ctx.authaccounts_privilege_log_write.assert_called_once_with(11, 7, True, allow_rule_id=99)
+		ctx.authaccounts_privilege_log_write.assert_called_once_with(11, 7, True, allow_rule_id=99, on_log_error=None)
+
+	def test_with_session_passes_log_error_callback(self):
+		ctx, _session = self._make_ctx([MagicMock(scalar_one=MagicMock(return_value=False))])
+		on_log_error = MagicMock()
+
+		allowed = ctx.authaccounts_user_allowPrivilege_read(
+			42, ('sudo',), session_id=11, on_log_error=on_log_error
+		)
+
+		self.assertFalse(allowed)
+		ctx.authaccounts_privilege_log_write.assert_called_once_with(
+			11, 7, False, allow_rule_id=None, on_log_error=on_log_error
+		)
+
+	def test_privilege_log_write_invokes_error_callback_and_suppresses(self):
+		from pyyaul.web.auth.db.model import DBModelContext
+
+		session = MagicMock()
+		session.execute.side_effect = RuntimeError('log failed')
+		session_cm = MagicMock()
+		session_cm.__enter__.return_value = session
+		session_cm.__exit__.return_value = None
+		orm = MagicMock()
+		orm.session.return_value = session_cm
+		schema = SimpleNamespace(accountsSchemaName='auth', sessionsSchemaName='sessions')
+		ctx = DBModelContext(orm, orm, orm, orm, schema)
+		on_log_error = MagicMock()
+
+		ctx.authaccounts_privilege_log_write(11, 7, True, allow_rule_id=99, on_log_error=on_log_error)
+
+		on_log_error.assert_called_once()
+		self.assertIsInstance(on_log_error.call_args.args[0], RuntimeError)

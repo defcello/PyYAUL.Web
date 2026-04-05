@@ -264,6 +264,7 @@ class DBModelContext:
             user_id :int,
             privilege_path :list[str]|str,
             session_id :int|None =None,
+            on_log_error =None,
     ) ->bool:
         """
         Returns `True` if ``user_id` should be allowed `privilege_name` and
@@ -324,7 +325,13 @@ class DBModelContext:
                     if row is not None:
                         rule_id = row.rule_id
             if session_id is not None:
-                self.authaccounts_privilege_log_write(session_id, privilege_id, ret, allow_rule_id=rule_id)
+                self.authaccounts_privilege_log_write(
+                    session_id,
+                    privilege_id,
+                    ret,
+                    allow_rule_id=rule_id,
+                    on_log_error=on_log_error,
+                )
         return ret
 
     def authaccounts_privilege_log_write(
@@ -333,6 +340,7 @@ class DBModelContext:
             privilege_id :int,
             allowed :bool,
             allow_rule_id :int|None =None,
+            on_log_error =None,
     ) ->None:
         """
         Appends a row to `table_privilege_log` recording that `session_id`
@@ -362,6 +370,11 @@ class DBModelContext:
                     },
                 )
         except Exception as e:
+            if on_log_error is not None:
+                try:
+                    on_log_error(e)
+                except Exception:
+                    logging.exception('privilege log error callback failed')
             logging.warning(
                 'privilege log write failed: session_id=%s privilege_id=%s allowed=%s allow_rule_id=%s error=%s',
                 session_id, privilege_id, allowed, allow_rule_id, e,

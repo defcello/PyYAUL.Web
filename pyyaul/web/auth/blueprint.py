@@ -222,6 +222,7 @@ class BlueprintContext:
             dbModelContext :DBModelContext,
             password_min_length :int =8,
             security_headers :dict[str, str|None]|None =None,
+            on_log_error =None,
     ):
         self.blueprint = flask.Blueprint(
             blueprint_name,
@@ -234,6 +235,7 @@ class BlueprintContext:
         self.dbModelContext = dbModelContext
         self.password_min_length = password_min_length
         self.security_headers = {} if security_headers is None else dict(security_headers)
+        self.on_log_error = on_log_error
         self.blueprint.record_once(self._app_hooks_register)
         self.blueprint.after_request(self._response_security_headers_set)
         self.blueprint.route('/index', methods=['POST', 'GET'])(self.page_index)
@@ -283,6 +285,28 @@ class BlueprintContext:
             duration_ms,
         )
         return flaskResponse
+
+    def _on_log_error(self, error):
+        if self.on_log_error is None:
+            return
+        try:
+            self.on_log_error(error)
+        except Exception:
+            logging.exception('audit log error callback failed')
+
+    def _authaccounts_user_login_log(self, **kwargs):
+        try:
+            return self.dbModelContext.authaccounts_user_login_log(**kwargs)
+        except Exception as e:
+            self._on_log_error(e)
+            logging.warning(
+                'user login log write failed: user_id=%s session_id=%s is_success=%s error=%s',
+                kwargs.get('user_id'),
+                kwargs.get('session_id'),
+                kwargs.get('is_success'),
+                e,
+            )
+            return None
 
     @staticmethod
     def _authSessionRequired_static(func):
@@ -348,7 +372,7 @@ class BlueprintContext:
         return decorated_function
 
     @staticmethod
-    def _authSessionPrivilegeRequired_static(privilege_path :list[str]|str):
+    def _authSessionPrivilegeRequired_static(privilege_path :list[str]|str, on_log_error =None):
         """
         Version of `authSessionRequired` for use by this class's methods.
 
@@ -367,7 +391,10 @@ class BlueprintContext:
             @wraps(func)
             def decorated_function(self, *args, **kargs):
                 assert(isinstance(self, BlueprintContext))
-                return self.authSessionPrivilegeRequired(privilege_path)(func, True)(self, *args, **kargs)
+                return self.authSessionPrivilegeRequired(
+                    privilege_path,
+                    on_log_error=on_log_error,
+                )(func, True)(self, *args, **kargs)
             return decorated_function
         return decorator
 
@@ -382,7 +409,7 @@ class BlueprintContext:
             return decorated_function
         return decorator
 
-    def authSessionPrivilegeRequired(self, privilege_path :list[str]|str):
+    def authSessionPrivilegeRequired(self, privilege_path :list[str]|str, on_log_error =None):
         """
         Function decorator that will only call the wrapped function if the user
         has a valid `authsession_session_record` AND has been granted the given
@@ -425,6 +452,7 @@ class BlueprintContext:
                         authsession_session_record.wolc_authaccounts__user__id,
                         privilege_path,
                         session_id=authsession_session_record.wolc_authsession__session__id,
+                        on_log_error=self.on_log_error if on_log_error is None else on_log_error,
                 ):
                     flask.flash(f'Access Denied.  If you need access, ask for the privilege at `{privilege_path!r}`.')
                     print('WARNING User has not been granted access; rerouting to login page.')
@@ -858,7 +886,7 @@ class BlueprintContext:
                 persistCookies = True if (flask.request.form.get('persistCookies') == 'yes') else False
                 authsession_session_record = self.dbModelContext.authsession_session_create(user_record.id)
                 if loginmethod_id is not None:
-                    self.dbModelContext.authaccounts_user_login_log(
+                    self._authaccounts_user_login_log(
                         loginmethod_id=loginmethod_id,
                         is_success=True,
                         user_id=user_record.id,
@@ -888,7 +916,7 @@ class BlueprintContext:
                         self.dbModelContext.authaccounts_user_unlocked_set(user_record.id, lockout_unlocked_at)
 
                 if loginmethod_id is not None:
-                    self.dbModelContext.authaccounts_user_login_log(
+                    self._authaccounts_user_login_log(
                         loginmethod_id=loginmethod_id,
                         is_success=False,
                         user_id=user_record.id if user_record is not None else None,
