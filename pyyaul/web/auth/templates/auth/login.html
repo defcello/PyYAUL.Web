@@ -30,6 +30,16 @@
 			</div>
 			<button class="button is-block is-info is-large is-fullwidth" action="submit">Login</button>
 		</form>
+		{% if passkeys_enabled %}
+			<div id="passkey-login-ui" class="mt-4" hidden data-passkey-options-url="{{ passkey_login_options_url }}" data-passkey-finish-url="{{ passkey_login_finish_url }}">
+				<hr>
+				<button class="button is-block is-light is-fullwidth" type="button" id="passkey-login-button">Sign In With Passkey</button>
+				<p class="help is-danger mt-2" id="passkey-login-status" hidden></p>
+			</div>
+		{% endif %}
 	</div>
 </div>
+{% if passkeys_enabled %}
+<script src="{{ passkey_login_script_url }}"></script>
+{% endif %}
 {% endblock %}

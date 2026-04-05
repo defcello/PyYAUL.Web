@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+	<div class="column is-5 is-offset-3">
+		<div class="box">
+			<h3 class="title">Create A Passkey On This Device?</h3>
+			<p class="mb-4">A passkey can make future sign-ins much faster on supported devices. You can always create one later from your account settings.</p>
+			<form id="passkey-offer-form" data-passkey-options-url="{{ passkey_register_options_url }}" data-passkey-finish-url="{{ passkey_register_finish_url }}">
+				<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+				<button class="button is-primary" type="submit">Register Now</button>
+			</form>
+			<p class="help is-danger mt-2" id="passkey-offer-status" hidden></p>
+			<div class="buttons mt-4">
+				<form method="POST" action="{{ remind_later_url }}">
+					<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+					<input type="hidden" name="action" value="later">
+					<button class="button is-light" type="submit">Remind Me Later</button>
+				</form>
+				<form method="POST" action="{{ decline_url }}">
+					<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+					<input type="hidden" name="action" value="dismiss">
+					<button class="button is-danger is-light" type="submit">No Thanks</button>
+				</form>
+			</div>
+		</div>
+	</div>
+	<script src="{{ passkey_offer_script_url }}"></script>
+{% endblock %}

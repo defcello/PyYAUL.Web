@@ -66,6 +66,7 @@ class SchemaV0_Base(Version):
             Column('is_disabled', Boolean, nullable=False),  #Set to `TRUE` if the account has been disabled (cannot login, has no privileges).
             Column('unlocked', DateTime(timezone=True), nullable=True, server_default=None),  #Set to the date/time that the user's account becomes unlocked; NULL means they've never been locked.
             Column('webauthn_user_id', sqlalchemy.LargeBinary, nullable=True),  #Opaque user handle for WebAuthn / passkeys.
+            Column('passkey_offer_dismissed', Boolean, nullable=False, server_default=sqlalchemy.false()),
             ForeignKeyConstraint(
                 ['creator_user_id'],
                 [f'{self.accountsSchemaName}.table_user.id'],

@@ -301,3 +301,94 @@ class Test_BlueprintContext_audit_log_errors(TestCase):
         self.assertTrue(response.headers['Location'].endswith('/auth/login'))
         self.on_log_error.assert_called_once()
         self.assertIsInstance(self.on_log_error.call_args.args[0], RuntimeError)
+
+
+class Test_BlueprintContext_passkey_offer(TestCase):
+
+    def setUp(self):
+        self.app = flask.Flask(__name__)
+        self.app.secret_key = 'testing'
+        self.db = MagicMock()
+        self.blueprintContext = BlueprintContext(
+            'auth',
+            __name__,
+            self.db,
+            passkeys_enabled=True,
+        )
+
+        @self.app.route('/')
+        def page_index():
+            return 'index'
+
+        self.app.register_blueprint(self.blueprintContext.blueprint)
+        self.client = self.app.test_client()
+
+    def test_password_login_redirects_to_passkey_offer_when_eligible(self):
+        self.db.authaccounts_user_readByEmailOrUsername.return_value = SimpleNamespace(
+            id=5,
+            is_loginenabled=True,
+            is_disabled=False,
+            unlocked=None,
+        )
+        self.db.authaccounts_user_passwordHash_readByID.return_value = 'unused'
+        self.db.authaccounts_loginmethod_id_readByName.return_value = 3
+        self.db.authsession_session_create.return_value = SimpleNamespace(
+            wolc_authsession__session__id=17,
+            wolc_authsession__session__cookie_id='cookie-123',
+            wolc_authaccounts__user__id=5,
+        )
+        self.db.authaccounts_user_readByID.return_value = SimpleNamespace(
+            id=5,
+            passkey_offer_dismissed=False,
+        )
+        self.db.authaccounts_passkeys_readByUserID.return_value = []
+
+        with patch('pyyaul.web.auth.blueprint._ip_rate_check_and_record', return_value=True), \
+             patch('bcrypt.checkpw', return_value=True):
+            response = self.client.post('/auth/login', data={
+                'username_or_email': 'alice',
+                'password': 'secret',
+            })
+
+        self.assertEqual(302, response.status_code)
+        self.assertTrue(response.headers['Location'].endswith('/auth/passkey-offer'))
+
+    def test_passkey_offer_dismiss_sets_permanent_opt_out(self):
+        self.blueprintContext._authsession_session_record_read = MagicMock(
+            return_value=SimpleNamespace(
+                wolc_authaccounts__user__id=7,
+                wolc_authsession__session__id=11,
+            )
+        )
+        self.db.authaccounts_user_readByID.return_value = SimpleNamespace(
+            id=7,
+            passkey_offer_dismissed=False,
+        )
+        self.db.authaccounts_passkeys_readByUserID.return_value = []
+
+        response = self.client.post('/auth/passkey-offer', data={'action': 'dismiss'})
+
+        self.assertEqual(302, response.status_code)
+        self.assertTrue(response.headers['Location'].endswith('/'))
+        self.db.authaccounts_user_passkey_offer_dismissed_set.assert_called_once_with(7, True)
+
+    def test_passkey_offer_remind_later_sets_session_skip_only(self):
+        self.blueprintContext._authsession_session_record_read = MagicMock(
+            return_value=SimpleNamespace(
+                wolc_authaccounts__user__id=7,
+                wolc_authsession__session__id=11,
+            )
+        )
+        self.db.authaccounts_user_readByID.return_value = SimpleNamespace(
+            id=7,
+            passkey_offer_dismissed=False,
+        )
+        self.db.authaccounts_passkeys_readByUserID.return_value = []
+
+        response = self.client.post('/auth/passkey-offer', data={'action': 'later'})
+
+        self.assertEqual(302, response.status_code)
+        self.assertTrue(response.headers['Location'].endswith('/'))
+        self.db.authaccounts_user_passkey_offer_dismissed_set.assert_not_called()
+        with self.client.session_transaction() as session:
+            self.assertTrue(session.get(self.blueprintContext.session_keys_passkey_offer_skip_str))

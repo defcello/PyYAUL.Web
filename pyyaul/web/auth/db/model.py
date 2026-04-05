@@ -28,6 +28,13 @@ import secrets
 import traceback
 
 
+def _base64url_encode(value :bytes|bytearray|memoryview|None) -> str:
+    if value is None:
+        return ''
+    import base64
+    return base64.urlsafe_b64encode(bytes(value)).rstrip(b'=').decode('ascii')
+
+
 
 
 #Return type used for session record reads.
@@ -661,6 +668,222 @@ class DBModelContext:
         print(f'{type(ret)=}')
         return ret
 
+    def authaccounts_user_webauthn_identity_readOrCreate(
+            self,
+            user_id :int,
+            creator_user_id :int,
+            username :str|None =None,
+            name_display :str|None =None,
+    ) -> object:
+        """
+        Ensures `table_user.webauthn_user_id` exists for `user_id` and returns
+        the identifying columns needed for WebAuthn registration.
+        """
+        dbORM = self.dbORM_authAccounts_RW
+        table_user = dbORM.tables[f'{self.dbSchema.accountsSchemaName}.table_user']
+        with dbORM.session() as dbSession:
+            record = dbSession.execute(
+                select(
+                    table_user.id,
+                    table_user.username,
+                    table_user.name_display,
+                    table_user.webauthn_user_id,
+                )
+                .where(and_(
+                    table_user.id == user_id,
+                    table_user.deleted.is_(None),
+                ))
+            ).one_or_none()
+            if record is None:
+                raise ValueError(f'ERROR No active user records found: {user_id=}')
+            if record.webauthn_user_id is None:
+                webauthn_user_id = secrets.token_bytes(32)
+                dbSession.execute(
+                    update(table_user)
+                    .where(and_(
+                        table_user.id == user_id,
+                        table_user.deleted.is_(None),
+                    ))
+                    .values(webauthn_user_id=webauthn_user_id)
+                )
+                dbSession.commit()
+                record = dbSession.execute(
+                    select(
+                        table_user.id,
+                        table_user.username,
+                        table_user.name_display,
+                        table_user.webauthn_user_id,
+                    )
+                    .where(and_(
+                        table_user.id == user_id,
+                        table_user.deleted.is_(None),
+                    ))
+                ).one()
+        return record
+
+    def authaccounts_user_passkey_offer_dismissed_set(
+            self,
+            user_id :int,
+            dismissed :bool,
+    ) -> None:
+        dbORM = self.dbORM_authAccounts_RW
+        table_user = dbORM.tables[f'{self.dbSchema.accountsSchemaName}.table_user']
+        with dbORM.session() as dbSession:
+            dbSession.execute(
+                update(table_user)
+                .where(and_(
+                    table_user.id == user_id,
+                    table_user.deleted.is_(None),
+                ))
+                .values(passkey_offer_dismissed=bool(dismissed))
+            )
+            dbSession.commit()
+
+    def authaccounts_passkeys_readByUserID(self, user_id :int) -> list[dict[str, object]]:
+        dbORM = self.dbORM_authAccounts_RO
+        with dbORM.session() as dbSession:
+            rows = dbSession.execute(
+                text(f"""
+                    SELECT
+                        p.id AS record_id,
+                        p.user_id AS user_id,
+                        p.friendly_name AS friendly_name,
+                        p.credential_id AS credential_id,
+                        p.credential_json AS credential_json,
+                        p.created AS created,
+                        p.last_used AS last_used
+                    FROM {self.dbSchema.accountsSchemaName}.table_user_loginmethod_passkey p
+                    WHERE p.user_id = :user_id
+                        AND p.deleted IS NULL
+                    ORDER BY p.created ASC
+                """),
+                {'user_id': user_id},
+            ).mappings().all()
+        ret = []
+        for row in rows:
+            item = dict(row)
+            item['credential_json'] = dict(item['credential_json'] or {})
+            ret.append(item)
+        return ret
+
+    def authaccounts_passkey_readByCredentialID(self, credential_id :bytes) -> dict[str, object]:
+        dbORM = self.dbORM_authAccounts_RO
+        with dbORM.session() as dbSession:
+            row = dbSession.execute(
+                text(f"""
+                    SELECT
+                        p.id AS record_id,
+                        p.user_id AS user_id,
+                        p.friendly_name AS friendly_name,
+                        p.credential_id AS credential_id,
+                        p.credential_json AS credential_json,
+                        p.created AS created,
+                        p.last_used AS last_used
+                    FROM {self.dbSchema.accountsSchemaName}.table_user_loginmethod_passkey p
+                    JOIN {self.dbSchema.accountsSchemaName}.table_user u
+                        ON u.id = p.user_id
+                    WHERE p.credential_id = :credential_id
+                        AND p.deleted IS NULL
+                        AND u.deleted IS NULL
+                        AND u.is_disabled IS FALSE
+                    ORDER BY p.id ASC
+                    LIMIT 1
+                """),
+                {'credential_id': credential_id},
+            ).mappings().one_or_none()
+        if row is None:
+            raise ValueError('ERROR Passkey credential was not found.')
+        item = dict(row)
+        item['credential_json'] = dict(item['credential_json'] or {})
+        return item
+
+    def authaccounts_passkey_create(
+            self,
+            user_id :int,
+            creator_user_id :int,
+            credential_id :bytes,
+            credential_json :dict[str, object],
+            friendly_name :str|None =None,
+    ) -> int:
+        self.authaccounts_user_loginmethod_add(user_id, creator_user_id, self.dbSchema.LoginMethod.Passkey.value)
+        dbORM = self.dbORM_authAccounts_RW
+        with dbORM.session() as dbSession:
+            row_id = dbSession.execute(
+                text(f"""
+                    INSERT INTO {self.dbSchema.accountsSchemaName}.table_user_loginmethod_passkey
+                            (creator_user_id, user_id, friendly_name, credential_id, credential_json)
+                        VALUES (
+                            :creator_user_id,
+                            :user_id,
+                            :friendly_name,
+                            :credential_id,
+                            :credential_json
+                        )
+                        RETURNING id
+                """),
+                {
+                    'creator_user_id': creator_user_id,
+                    'user_id': user_id,
+                    'friendly_name': friendly_name,
+                    'credential_id': credential_id,
+                    'credential_json': json.dumps(credential_json),
+                },
+            ).scalar_one()
+            dbSession.commit()
+        return int(row_id)
+
+    def authaccounts_passkey_touch(
+            self,
+            passkey_id :int,
+            credential_json :dict[str, object]|None =None,
+    ) -> None:
+        dbORM = self.dbORM_authAccounts_RW
+        with dbORM.session() as dbSession:
+            params = {'passkey_id': passkey_id}
+            sql = f"""
+                UPDATE {self.dbSchema.accountsSchemaName}.table_user_loginmethod_passkey
+                    SET last_used = timezone('utc', now())
+            """
+            if credential_json is not None:
+                sql += ", credential_json = :credential_json"
+                params['credential_json'] = json.dumps(credential_json)
+            sql += """
+                    WHERE id = :passkey_id
+                        AND deleted IS NULL
+            """
+            result = dbSession.execute(text(sql), params)
+            if result.rowcount == 0:
+                raise ValueError(f'ERROR Passkey not found: {passkey_id=}')
+            dbSession.commit()
+
+    def authaccounts_passkey_delete(
+            self,
+            passkey_id :int,
+            user_id :int,
+            deleter_user_id :int,
+    ) -> None:
+        dbORM = self.dbORM_authAccounts_RW
+        with dbORM.session() as dbSession:
+            result = dbSession.execute(
+                text(f"""
+                    UPDATE {self.dbSchema.accountsSchemaName}.table_user_loginmethod_passkey
+                        SET
+                            deleter_user_id = :deleter_user_id,
+                            deleted = timezone('utc', now())
+                        WHERE id = :passkey_id
+                            AND user_id = :user_id
+                            AND deleted IS NULL
+                """),
+                {
+                    'passkey_id': passkey_id,
+                    'user_id': user_id,
+                    'deleter_user_id': deleter_user_id,
+                },
+            )
+            if result.rowcount == 0:
+                raise ValueError(f'ERROR Passkey not found: {passkey_id=}')
+            dbSession.commit()
+
     def authaccounts_user_readByID(self, userID :int, cols_str :list[str] =('id',)) ->object:
         """
         Returns the auth accounts record with columns `cols_str` matching the
@@ -1278,6 +1501,7 @@ class DBModelContext:
             self,
             user_id :int,
             creator_user_id :int,
+            loginmethod_name :str|None =None,
     ) ->None:
         """
         Links `user_id` to the "Username and Password" login method so the user
@@ -1287,6 +1511,8 @@ class DBModelContext:
         If the login method record does not exist yet in this auth database,
         it will be created first using `creator_user_id` as the actor.
         """
+        if loginmethod_name is None:
+            loginmethod_name = self.dbSchema.LoginMethod.Password.value
         dbORM = self.dbORM_authAccounts_RW
         with dbORM.session() as dbSession:
             loginmethod_id = dbSession.execute(
@@ -1300,7 +1526,7 @@ class DBModelContext:
                     ;
                 """),
                 {
-                    'loginmethod_name': self.dbSchema.LoginMethod.Password.value,
+                    'loginmethod_name': loginmethod_name,
                 },
             ).scalar_one_or_none()
             if loginmethod_id is None:
@@ -1314,12 +1540,12 @@ class DBModelContext:
                             )
                             RETURNING id
                         ;
-                    """),
-                    {
-                        'creator_user_id': creator_user_id,
-                        'loginmethod_name': self.dbSchema.LoginMethod.Password.value,
-                    },
-                ).scalar_one()
+                """),
+                {
+                    'creator_user_id': creator_user_id,
+                    'loginmethod_name': loginmethod_name,
+                },
+            ).scalar_one()
             dbSession.execute(
                 text(f"""
                     INSERT INTO {self.dbSchema.accountsSchemaName}.table_user_loginmethod

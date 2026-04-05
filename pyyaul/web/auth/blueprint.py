@@ -13,6 +13,7 @@ from sqlalchemy.future import select
 from werkzeug.security import generate_password_hash, check_password_hash
 import flask
 import inspect
+import json
 import secrets
 import logging
 import threading
@@ -89,6 +90,52 @@ _IP_RATE_MAX_ATTEMPTS = 20      # max login attempts per IP per window
 _USER_RATE_LIMIT_RESPONSE_MESSAGE = 'Too many requests. Please try again later.'
 _AUTH_POST_RATE_MAX_REQUESTS = 10
 _AUTH_POST_RATE_WINDOW_SECONDS = 60
+
+
+def _base64url_encode(value :bytes|bytearray|memoryview|None) -> str:
+    if value is None:
+        return ''
+    import base64
+    return base64.urlsafe_b64encode(bytes(value)).rstrip(b'=').decode('ascii')
+
+
+def _base64url_decode(value :str|bytes|bytearray|memoryview|None) -> bytes:
+    if value in (None, '', b''):
+        return b''
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        value = bytes(value).decode('ascii')
+    padding = '=' * ((4 - len(value) % 4) % 4)
+    import base64
+    return base64.urlsafe_b64decode(f'{value}{padding}')
+
+
+def _json_error(message :str, status_code :int =400):
+    response = flask.jsonify({'error': message})
+    response.status_code = status_code
+    return response
+
+
+def _webauthn_adapter_make():
+    try:
+        from webauthn import (
+            generate_authentication_options,
+            generate_registration_options,
+            options_to_json,
+            verify_authentication_response,
+            verify_registration_response,
+        )
+    except ImportError:
+        return None
+    return {
+        'generate_authentication_options': generate_authentication_options,
+        'generate_registration_options': generate_registration_options,
+        'options_to_json': options_to_json,
+        'verify_authentication_response': verify_authentication_response,
+        'verify_registration_response': verify_registration_response,
+    }
+
+
+_WEBAUTHN_ADAPTER = _webauthn_adapter_make()
 
 
 def _ip_rate_check_and_record(ip :str) ->bool:
@@ -223,24 +270,46 @@ class BlueprintContext:
             password_min_length :int =8,
             security_headers :dict[str, str|None]|None =None,
             on_log_error =None,
+            passkeys_enabled :bool|None =None,
+            passkeys_rp_name :str|None =None,
+            passkeys_rp_id :str|None =None,
+            passkeys_origin :str|None =None,
     ):
         self.blueprint = flask.Blueprint(
             blueprint_name,
             __name__,
             template_folder='templates',
+            static_folder='static',
             url_prefix=f'/{blueprint_name}',
         )
         self.session_keys_session_cookie_id_str = f'{blueprint_name}_session_cookie_id'
         self.session_keys_user_id_str = f'{blueprint_name}_session_user_id'
+        self.session_keys_passkey_login_options_str = f'{blueprint_name}_passkey_login_options'
+        self.session_keys_passkey_register_options_str = f'{blueprint_name}_passkey_register_options'
+        self.session_keys_passkey_offer_skip_str = f'{blueprint_name}_passkey_offer_skip'
         self.dbModelContext = dbModelContext
         self.password_min_length = password_min_length
         self.security_headers = {} if security_headers is None else dict(security_headers)
         self.on_log_error = on_log_error
+        self.passkeys_enabled = (
+            _WEBAUTHN_ADAPTER is not None
+            if passkeys_enabled is None else
+            bool(passkeys_enabled)
+        )
+        self.passkeys_rp_name = passkeys_rp_name
+        self.passkeys_rp_id = passkeys_rp_id
+        self.passkeys_origin = passkeys_origin
         self.blueprint.record_once(self._app_hooks_register)
         self.blueprint.after_request(self._response_security_headers_set)
         self.blueprint.route('/index', methods=['POST', 'GET'])(self.page_index)
         self.blueprint.route('/login', methods=['POST', 'GET'])(self.page_login)
+        self.blueprint.route('/login/passkeys/options', methods=['POST'])(self.page_login_passkeys_options)
+        self.blueprint.route('/login/passkeys/finish', methods=['POST'])(self.page_login_passkeys_finish)
         self.blueprint.route('/logout', methods=['POST', 'GET'])(self.page_logout)
+        self.blueprint.route('/passkey-offer', methods=['POST', 'GET'])(self.page_passkeyOffer)
+        self.blueprint.route('/account/passkeys/register/options', methods=['POST'])(self.page_account_passkeys_register_options)
+        self.blueprint.route('/account/passkeys/register/finish', methods=['POST'])(self.page_account_passkeys_register_finish)
+        self.blueprint.route('/account/passkeys/delete', methods=['POST'])(self.page_account_passkeys_delete)
         self.blueprint.route('/groupCreate', methods=['POST', 'GET'])(self.page_groupCreate)
         self.blueprint.route('/groupMembers', methods=['POST', 'GET'])(self.page_groupMembers)
         self.blueprint.route('/groupUpdate', methods=['POST', 'GET'])(self.page_groupUpdate)
@@ -307,6 +376,129 @@ class BlueprintContext:
                 e,
             )
             return None
+
+    def _passkeys_require_enabled(self):
+        if not self.passkeys_enabled:
+            return _json_error('Passkeys are not enabled for this deployment.', 404)
+        if _WEBAUTHN_ADAPTER is None:
+            return _json_error('Passkey support requires the optional `webauthn` dependency.', 503)
+        return None
+
+    def _passkeys_rp_id_resolve(self) -> str:
+        if self.passkeys_rp_id is not None:
+            return self.passkeys_rp_id
+        return (flask.request.host or '').split(':', 1)[0]
+
+    def _passkeys_origin_resolve(self) -> str:
+        if self.passkeys_origin is not None:
+            return self.passkeys_origin.rstrip('/')
+        return flask.request.url_root.rstrip('/')
+
+    def _passkeys_rp_name_resolve(self) -> str:
+        if self.passkeys_rp_name is not None:
+            return self.passkeys_rp_name
+        return self._passkeys_rp_id_resolve()
+
+    def _passkey_loginmethod_id_read(self) -> int|None:
+        try:
+            return self.dbModelContext.authaccounts_loginmethod_id_readByName(
+                self.dbModelContext.dbSchema.LoginMethod.Passkey.value
+            )
+        except ValueError:
+            return None
+
+    def _passkey_login_success_response(self, user_id :int, persist_cookies :bool) -> flask.Response:
+        authsession_session_record = self.dbModelContext.authsession_session_create(user_id)
+        loginmethod_id = self._passkey_loginmethod_id_read()
+        if loginmethod_id is not None:
+            self._authaccounts_user_login_log(
+                loginmethod_id=loginmethod_id,
+                is_success=True,
+                user_id=user_id,
+                session_id=authsession_session_record.wolc_authsession__session__id,
+                loginmethod_details={
+                    'ip': flask.request.remote_addr,
+                    'user_agent': flask.request.user_agent.string,
+                },
+            )
+        flask.session.permanent = bool(persist_cookies)
+        flask.session[self.session_keys_session_cookie_id_str] = authsession_session_record.wolc_authsession__session__cookie_id
+        flask.session[self.session_keys_user_id_str] = authsession_session_record.wolc_authaccounts__user__id
+        flask.session.pop(self.session_keys_passkey_login_options_str, None)
+        redirect_url = (
+            flask.url_for(f'{self.blueprint.name}.page_passkeyOffer')
+            if self._passkey_offer_redirect_needed(user_id)
+            else flask.url_for('page_index')
+        )
+        return flask.jsonify({'redirect': redirect_url})
+
+    def _passkey_offer_redirect_needed(self, user_id :int) -> bool:
+        if not self.passkeys_enabled:
+            return False
+        if flask.session.get(self.session_keys_passkey_offer_skip_str):
+            return False
+        try:
+            user_record = self.dbModelContext.authaccounts_user_readByID(
+                user_id,
+                ('id', 'passkey_offer_dismissed'),
+            )
+        except ValueError:
+            return False
+        if bool(getattr(user_record, 'passkey_offer_dismissed', False)):
+            return False
+        return len(self.dbModelContext.authaccounts_passkeys_readByUserID(user_id)) == 0
+
+    def _passkey_registration_context_clear(self):
+        flask.session.pop(self.session_keys_passkey_register_options_str, None)
+
+    def _passkey_login_context_clear(self):
+        flask.session.pop(self.session_keys_passkey_login_options_str, None)
+
+    def _passkeys_exclude_credentials_build(self, user_id :int) -> list[dict[str, object]]:
+        return [
+            {
+                'id': credential['credential_id'],
+                'type': 'public-key',
+            }
+            for credential in self.dbModelContext.authaccounts_passkeys_readByUserID(user_id)
+        ]
+
+    def _passkey_registration_payload_build(self, verification, credential_response :dict, friendly_name :str|None) -> dict[str, object]:
+        credential = getattr(verification, 'credential', verification)
+        credential_public_key = (
+            getattr(credential, 'credential_public_key', None)
+            or getattr(verification, 'credential_public_key', None)
+        )
+        sign_count = (
+            getattr(credential, 'sign_count', None)
+            if getattr(credential, 'sign_count', None) is not None else
+            getattr(verification, 'sign_count', 0)
+        )
+        transports = credential_response.get('response', {}).get('transports', [])
+        return {
+            'friendly_name': friendly_name,
+            'credential_id': _base64url_encode(
+                getattr(credential, 'credential_id', None)
+                or getattr(verification, 'credential_id', b'')
+            ),
+            'credential_public_key': _base64url_encode(credential_public_key or b''),
+            'sign_count': int(sign_count or 0),
+            'credential_device_type': getattr(verification, 'credential_device_type', ''),
+            'credential_backed_up': bool(getattr(verification, 'credential_backed_up', False)),
+            'transports': transports,
+        }
+
+    def _passkey_authentication_update_from_verification(self, credential_record :dict[str, object], verification) -> None:
+        credential_json = dict(credential_record['credential_json'])
+        new_sign_count = getattr(verification, 'new_sign_count', None)
+        if new_sign_count is None:
+            new_sign_count = getattr(verification, 'sign_count', None)
+        if new_sign_count is not None:
+            credential_json['sign_count'] = int(new_sign_count)
+        self.dbModelContext.authaccounts_passkey_touch(
+            credential_record['record_id'],
+            credential_json=credential_json,
+        )
 
     @staticmethod
     def _authSessionRequired_static(func):
@@ -892,12 +1084,18 @@ class BlueprintContext:
                         user_id=user_record.id,
                         session_id=authsession_session_record.wolc_authsession__session__id,
                         loginmethod_details=login_details,
-                    )
+                )
                 flask.session.permanent = persistCookies
                 flask.session[self.session_keys_session_cookie_id_str] = authsession_session_record.wolc_authsession__session__cookie_id
                 flask.session[self.session_keys_user_id_str] = authsession_session_record.wolc_authaccounts__user__id
+                flask.session.pop(self.session_keys_passkey_offer_skip_str, None)
                 flaskResponseOld = flaskResponse
-                flaskResponse = flask.redirect(flask.url_for(f'page_index'))  #Route to root, which routes logged-in users to a suitable landing page.
+                redirect_target = (
+                    flask.url_for(f'{self.blueprint.name}.page_passkeyOffer')
+                    if self._passkey_offer_redirect_needed(user_record.id) else
+                    flask.url_for(f'page_index')
+                )
+                flaskResponse = flask.redirect(redirect_target)
                 _flaskResponse_cookies_copy(flaskResponseOld, flaskResponse)
             else:  #Authentication failed.
                 time.sleep(_LOGIN_FAILURE_RESPONSE_DELAY_SECONDS)
@@ -939,10 +1137,191 @@ class BlueprintContext:
                 flaskResponse.data = flask.render_template(
                     'auth/login.html',
                     urlPost=flask.url_for(f'{self.blueprint.name}.page_login'),
+                    passkeys_enabled=self.passkeys_enabled,
+                    passkey_login_options_url=flask.url_for(f'{self.blueprint.name}.page_login_passkeys_options'),
+                    passkey_login_finish_url=flask.url_for(f'{self.blueprint.name}.page_login_passkeys_finish'),
+                    passkey_login_script_url=flask.url_for(f'{self.blueprint.name}.static', filename='js/passkey-login.js'),
                 )
             else:  #User has an active session.
                 flaskResponse = flask.redirect(flask.url_for(f'page_index'))  #Route to root, which routes logged-in users to a suitable landing page.
         return flaskResponse
+
+    def page_login_passkeys_options(self):
+        error_response = self._passkeys_require_enabled()
+        if error_response is not None:
+            return error_response
+        options = _WEBAUTHN_ADAPTER['generate_authentication_options'](
+            rp_id=self._passkeys_rp_id_resolve(),
+            user_verification='preferred',
+        )
+        flask.session[self.session_keys_passkey_login_options_str] = {
+            'challenge': _base64url_encode(options.challenge),
+            'persist_cookies': flask.request.form.get('remember_me') == 'yes',
+        }
+        payload = json.loads(_WEBAUTHN_ADAPTER['options_to_json'](options))
+        payload['mediation'] = 'optional'
+        return flask.jsonify(payload)
+
+    def page_login_passkeys_finish(self):
+        error_response = self._passkeys_require_enabled()
+        if error_response is not None:
+            return error_response
+        context = flask.session.get(self.session_keys_passkey_login_options_str)
+        if context is None:
+            return _json_error('Passkey login has not been started.', 400)
+        credential_response = flask.request.get_json(silent=True)
+        if not isinstance(credential_response, dict):
+            return _json_error('Passkey login payload must be JSON.', 400)
+        try:
+            credential_id = _base64url_decode(
+                credential_response.get('rawId') or credential_response.get('id')
+            )
+        except Exception:
+            return _json_error('Passkey credential ID is invalid.', 400)
+        try:
+            credential_record = self.dbModelContext.authaccounts_passkey_readByCredentialID(credential_id)
+        except ValueError:
+            return _json_error('Passkey could not be matched to an active account.', 400)
+        credential_json = credential_record['credential_json']
+        try:
+            verification = _WEBAUTHN_ADAPTER['verify_authentication_response'](
+                credential=credential_response,
+                expected_challenge=context['challenge'],
+                expected_rp_id=self._passkeys_rp_id_resolve(),
+                expected_origin=self._passkeys_origin_resolve(),
+                credential_public_key=_base64url_decode(credential_json['credential_public_key']),
+                credential_current_sign_count=int(credential_json.get('sign_count', 0)),
+                require_user_verification=False,
+            )
+        except Exception:
+            self._passkey_login_context_clear()
+            return _json_error('Passkey login could not be verified.', 400)
+        self._passkey_authentication_update_from_verification(credential_record, verification)
+        return self._passkey_login_success_response(
+            credential_record['user_id'],
+            bool(context.get('persist_cookies')),
+        )
+
+    @_authSessionRequired_static
+    def page_passkeyOffer(self, _auth_authsession_session_record):
+        if not self._passkey_offer_redirect_needed(_auth_authsession_session_record.wolc_authaccounts__user__id):
+            return flask.redirect(flask.url_for('page_index'))
+        if flask.request.method == 'POST':
+            action = flask.request.form.get('action', 'later')
+            user_id = _auth_authsession_session_record.wolc_authaccounts__user__id
+            if action == 'dismiss':
+                self.dbModelContext.authaccounts_user_passkey_offer_dismissed_set(user_id, True)
+                flask.session[self.session_keys_passkey_offer_skip_str] = True
+            else:
+                flask.session[self.session_keys_passkey_offer_skip_str] = True
+            return flask.redirect(flask.url_for('page_index'))
+        return flask.render_template(
+            'auth/passkeyOffer.html',
+            authsession_session_record=_auth_authsession_session_record,
+            passkey_register_options_url=flask.url_for(f'{self.blueprint.name}.page_account_passkeys_register_options'),
+            passkey_register_finish_url=flask.url_for(f'{self.blueprint.name}.page_account_passkeys_register_finish'),
+            passkey_offer_script_url=flask.url_for(f'{self.blueprint.name}.static', filename='js/passkey-offer.js'),
+            remind_later_url=flask.url_for(f'{self.blueprint.name}.page_passkeyOffer'),
+            decline_url=flask.url_for(f'{self.blueprint.name}.page_passkeyOffer'),
+        )
+
+    @_authSessionRequired_static
+    @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
+    def page_account_passkeys_register_options(self, _auth_authsession_session_record):
+        error_response = self._passkeys_require_enabled()
+        if error_response is not None:
+            return error_response
+        user_id = _auth_authsession_session_record.wolc_authaccounts__user__id
+        user_record = self.dbModelContext.authaccounts_user_webauthn_identity_readOrCreate(
+            user_id,
+            _auth_authsession_session_record.wolc_authaccounts__user__id,
+            username=_auth_authsession_session_record.wolc_authaccounts__user__username,
+            name_display=_auth_authsession_session_record.wolc_authaccounts__user__name_display,
+        )
+        passkey_label = (flask.request.form.get('passkey_label') or '').strip() or None
+        options = _WEBAUTHN_ADAPTER['generate_registration_options'](
+            rp_id=self._passkeys_rp_id_resolve(),
+            rp_name=self._passkeys_rp_name_resolve(),
+            user_id=user_record.webauthn_user_id,
+            user_name=user_record.username,
+            user_display_name=user_record.name_display or user_record.username,
+            exclude_credentials=self._passkeys_exclude_credentials_build(user_id),
+            authenticator_selection={
+                'resident_key': 'preferred',
+                'user_verification': 'preferred',
+            },
+        )
+        flask.session[self.session_keys_passkey_register_options_str] = {
+            'challenge': _base64url_encode(options.challenge),
+            'user_id': user_id,
+            'friendly_name': passkey_label,
+        }
+        payload = json.loads(_WEBAUTHN_ADAPTER['options_to_json'](options))
+        payload['mediation'] = 'optional'
+        return flask.jsonify(payload)
+
+    @_authSessionRequired_static
+    @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
+    def page_account_passkeys_register_finish(self, _auth_authsession_session_record):
+        error_response = self._passkeys_require_enabled()
+        if error_response is not None:
+            return error_response
+        context = flask.session.get(self.session_keys_passkey_register_options_str)
+        if context is None:
+            return _json_error('Passkey registration has not been started.', 400)
+        credential_response = flask.request.get_json(silent=True)
+        if not isinstance(credential_response, dict):
+            return _json_error('Passkey registration payload must be JSON.', 400)
+        try:
+            verification = _WEBAUTHN_ADAPTER['verify_registration_response'](
+                credential=credential_response,
+                expected_challenge=context['challenge'],
+                expected_rp_id=self._passkeys_rp_id_resolve(),
+                expected_origin=self._passkeys_origin_resolve(),
+                require_user_verification=False,
+            )
+        except Exception:
+            self._passkey_registration_context_clear()
+            return _json_error('Passkey registration could not be verified.', 400)
+        payload = self._passkey_registration_payload_build(
+            verification,
+            credential_response,
+            context.get('friendly_name'),
+        )
+        self.dbModelContext.authaccounts_passkey_create(
+            context['user_id'],
+            _auth_authsession_session_record.wolc_authaccounts__user__id,
+            credential_id=_base64url_decode(payload['credential_id']),
+            credential_json=payload,
+            friendly_name=payload.get('friendly_name'),
+        )
+        self.dbModelContext.authaccounts_user_passkey_offer_dismissed_set(context['user_id'], False)
+        flask.session[self.session_keys_passkey_offer_skip_str] = True
+        self._passkey_registration_context_clear()
+        return flask.jsonify({'ok': True})
+
+    @_authSessionRequired_static
+    @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
+    def page_account_passkeys_delete(self, _auth_authsession_session_record):
+        error_response = self._passkeys_require_enabled()
+        if error_response is not None:
+            return flask.redirect(flask.url_for(f'{self.blueprint.name}.page_userUpdate', user_id=_auth_authsession_session_record.wolc_authaccounts__user__id))
+        try:
+            passkey_id = int(flask.request.form['passkey_id'])
+        except (KeyError, TypeError, ValueError):
+            flask.flash('A passkey ID is required to delete a passkey.')
+            return flask.redirect(flask.url_for(f'{self.blueprint.name}.page_userUpdate', user_id=_auth_authsession_session_record.wolc_authaccounts__user__id))
+        try:
+            self.dbModelContext.authaccounts_passkey_delete(
+                passkey_id,
+                _auth_authsession_session_record.wolc_authaccounts__user__id,
+                _auth_authsession_session_record.wolc_authaccounts__user__id,
+            )
+            flask.flash('Passkey removed.')
+        except Exception:
+            traceback.print_exc()
+            flask.flash('Failed to remove passkey.')
+        return flask.redirect(flask.url_for(f'{self.blueprint.name}.page_userUpdate', user_id=_auth_authsession_session_record.wolc_authaccounts__user__id))
 
     @_authSessionRequired_static
     @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
@@ -1331,7 +1710,7 @@ class BlueprintContext:
                 flaskResponse = flask.redirect(flask.url_for(f'{self.blueprint.name}.page_userViewAll'))
         else:
             targetUserRecord = self.dbModelContext.authaccounts_user_readByID(
-                targetUser_id, ('id', 'username', 'created', 'name_display', 'email', 'phone_sms', 'is_group')
+                targetUser_id, ('id', 'username', 'created', 'name_display', 'email', 'phone_sms', 'is_group', 'passkey_offer_dismissed')
             )
             current_group_memberships = self.dbModelContext.authaccounts_user_group_memberships_read(targetUser_id)
             target_is_sudoer = any(item['group_username'] == 'sudoers' for item in current_group_memberships)
@@ -1341,6 +1720,11 @@ class BlueprintContext:
                 for group_record in sorted(self.dbModelContext.authaccounts_groups_read(), key=lambda record: record.username)
                 if group_record.id not in existing_group_ids and group_record.id != targetUser_id
             ]
+            target_passkeys = (
+                self.dbModelContext.authaccounts_passkeys_readByUserID(targetUser_id)
+                if self.passkeys_enabled and caller_user_id == targetUser_id and not targetUserRecord.is_group else
+                []
+            )
             flaskResponse.data = flask.render_template(
                 'auth/userUpdate.html',
                 authsession_session_record=_auth_authsession_session_record,
@@ -1352,6 +1736,14 @@ class BlueprintContext:
                 target_is_group=targetUserRecord.is_group,
                 current_group_memberships=current_group_memberships,
                 available_group_records=available_group_records,
+                passkeys_enabled=self.passkeys_enabled and caller_user_id == targetUser_id and not targetUserRecord.is_group,
+                target_passkeys=target_passkeys,
+                passkey_offer_dismissed=bool(getattr(targetUserRecord, 'passkey_offer_dismissed', False)),
+                passkey_register_options_url=flask.url_for(f'{self.blueprint.name}.page_account_passkeys_register_options'),
+                passkey_register_finish_url=flask.url_for(f'{self.blueprint.name}.page_account_passkeys_register_finish'),
+                passkey_delete_url=flask.url_for(f'{self.blueprint.name}.page_account_passkeys_delete'),
+                passkey_account_script_url=flask.url_for(f'{self.blueprint.name}.static', filename='js/passkey-account.js'),
+                user_update_script_url=flask.url_for(f'{self.blueprint.name}.static', filename='js/user-update.js'),
                 urlCancel=flask.url_for(f'{self.blueprint.name}.page_userViewAll'),
                 urlPost=flask.url_for(f'{self.blueprint.name}.page_userUpdate'),
             )
