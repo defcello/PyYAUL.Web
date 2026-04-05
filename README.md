@@ -47,6 +47,12 @@ sys.path.append(str(_ROOT / 'PyYAUL.DB'))
 sys.path.append(str(_ROOT / 'PyYAUL.Web'))
 ```
 
+For local development inside this checkout, commands started from the
+`PyYAUL.Web` repo also auto-discover sibling `PyYAUL.Base` and `PyYAUL.DB`
+repos through the repo-local [`sitecustomize.py`](sitecustomize.py), so
+`python test.py` and direct `python -m unittest ...` invocations work without
+manually exporting `PYTHONPATH`.
+
 ## Usage
 
 ### `cfg.json` in a derived project
