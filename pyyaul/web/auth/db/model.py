@@ -2,10 +2,12 @@
 Interface module for the database.
 """
 
+import sqlalchemy
 from .schema.vLatest import Schema
 from collections import namedtuple
 from datetime import datetime, timezone
-def __sqlalchemy_recordDetachFromSession(ormRecord, session :sqlalchemy.orm.Session) ->object:
+from sqlalchemy.orm import Session
+def __sqlalchemy_recordDetachFromSession(ormRecord, session :Session) ->object:
 	"""
 	Detaches `ormRecord` from `session`, including loading all lazy-loaded
 	attributes.
@@ -23,7 +25,6 @@ from sqlalchemy import and_, insert, inspect, or_, select, text, update
 import json
 import logging
 import secrets
-import sqlalchemy
 import traceback
 
 
@@ -290,20 +291,38 @@ class DBModelContext:
         if privilege_id is not None:
             dbORM = self.dbORM_authAccounts_RO
             with dbORM.session() as dbSession:
-                query = text(f"""
-                    SELECT r.allowed, r.rule_id
-                        FROM {self.dbSchema.accountsSchemaName}.function_user_has_privilege_nocache_with_rule(
-                            :user_id
-                            , :privilege_id
-                        ) AS r
+                result = dbSession.execute(text(f"""
+                    SELECT COALESCE(
+                            {self.dbSchema.accountsSchemaName}.function_user_has_privilege(
+                                :user_id
+                                , :privilege_id
+                            )
+                            , FALSE
+                        )
                     ;
-                """)
-                row = dbSession.execute(query, {
+                """), {
                     'user_id': user_id,
                     'privilege_id': privilege_id,
-                }).fetchone()
-                ret = bool(row.allowed)
-                rule_id = row.rule_id
+                }).scalar_one()
+                ret = bool(result)
+                # Keep the boolean decision on the MV-backed path when the cache is
+                # clean. Only resolve the winning rule on allows so audit logging can
+                # record an informative rule ID without forcing every deny through the
+                # recursive nocache function.
+                if ret and session_id is not None:
+                    row = dbSession.execute(text(f"""
+                        SELECT r.allowed, r.rule_id
+                            FROM {self.dbSchema.accountsSchemaName}.function_user_has_privilege_nocache_with_rule(
+                                :user_id
+                                , :privilege_id
+                            ) AS r
+                        ;
+                    """), {
+                        'user_id': user_id,
+                        'privilege_id': privilege_id,
+                    }).fetchone()
+                    if row is not None:
+                        rule_id = row.rule_id
             if session_id is not None:
                 self.authaccounts_privilege_log_write(session_id, privilege_id, ret, allow_rule_id=rule_id)
         return ret

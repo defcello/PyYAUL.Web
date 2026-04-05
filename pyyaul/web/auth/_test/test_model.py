@@ -7,6 +7,7 @@ Flask app or database connection is required.
 
 from unittest import TestCase
 from unittest.mock import MagicMock, call
+from types import SimpleNamespace
 
 
 
@@ -149,3 +150,58 @@ class Test_authAccountsRecord_isSuperauth_set(TestCase):
 		ctx.authaccounts_user_allowPrivilege_read.assert_called_once_with(
 			1, ('sudo',), session_id=33
 		)
+
+
+class Test_DBModelContext_authaccounts_user_allowPrivilege_read(TestCase):
+
+	def setUp(self):
+		from pyyaul.web.auth.db.model import DBModelContext
+		self.DBModelContext = DBModelContext
+
+	def _make_ctx(self, execute_results):
+		session = MagicMock()
+		session.execute.side_effect = execute_results
+		session_cm = MagicMock()
+		session_cm.__enter__.return_value = session
+		session_cm.__exit__.return_value = None
+		orm = MagicMock()
+		orm.session.return_value = session_cm
+		schema = SimpleNamespace(accountsSchemaName='auth', sessionsSchemaName='sessions')
+		ctx = self.DBModelContext(orm, orm, orm, orm, schema)
+		ctx.authaccounts_privilege_read = MagicMock(return_value=7)
+		ctx.authaccounts_privilege_log_write = MagicMock()
+		return ctx, session
+
+	def test_without_session_uses_cached_boolean_only(self):
+		ctx, session = self._make_ctx([MagicMock(scalar_one=MagicMock(return_value=True))])
+
+		allowed = ctx.authaccounts_user_allowPrivilege_read(42, ('sudo',))
+
+		self.assertTrue(allowed)
+		self.assertEqual(session.execute.call_count, 1)
+		self.assertIn('function_user_has_privilege(', str(session.execute.call_args_list[0].args[0]))
+		ctx.authaccounts_privilege_log_write.assert_not_called()
+
+	def test_denied_with_session_logs_nil_rule_without_nocache_lookup(self):
+		ctx, session = self._make_ctx([MagicMock(scalar_one=MagicMock(return_value=False))])
+
+		allowed = ctx.authaccounts_user_allowPrivilege_read(42, ('sudo',), session_id=11)
+
+		self.assertFalse(allowed)
+		self.assertEqual(session.execute.call_count, 1)
+		self.assertIn('function_user_has_privilege(', str(session.execute.call_args_list[0].args[0]))
+		ctx.authaccounts_privilege_log_write.assert_called_once_with(11, 7, False, allow_rule_id=None)
+
+	def test_allowed_with_session_fetches_rule_id_for_logging(self):
+		ctx, session = self._make_ctx([
+			MagicMock(scalar_one=MagicMock(return_value=True)),
+			MagicMock(fetchone=MagicMock(return_value=SimpleNamespace(allowed=True, rule_id=99))),
+		])
+
+		allowed = ctx.authaccounts_user_allowPrivilege_read(42, ('sudo',), session_id=11)
+
+		self.assertTrue(allowed)
+		self.assertEqual(session.execute.call_count, 2)
+		self.assertIn('function_user_has_privilege(', str(session.execute.call_args_list[0].args[0]))
+		self.assertIn('function_user_has_privilege_nocache_with_rule(', str(session.execute.call_args_list[1].args[0]))
+		ctx.authaccounts_privilege_log_write.assert_called_once_with(11, 7, True, allow_rule_id=99)
