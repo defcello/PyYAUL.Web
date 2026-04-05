@@ -20,6 +20,7 @@ import logging
 import threading
 import time
 import traceback
+from itsdangerous import BadSignature, URLSafeSerializer
 
 
 DEFAULT_SECURITY_HEADERS = {
@@ -306,6 +307,7 @@ class BlueprintContext:
         self.session_keys_passkey_login_options_str = f'{blueprint_name}_passkey_login_options'
         self.session_keys_passkey_register_options_str = f'{blueprint_name}_passkey_register_options'
         self.session_keys_passkey_offer_skip_str = f'{blueprint_name}_passkey_offer_skip'
+        self.cookie_keys_passkey_device_str = f'{blueprint_name}_passkey_device'
         self.dbModelContext = dbModelContext
         self.password_min_length = password_min_length
         self.security_headers = {} if security_headers is None else dict(security_headers)
@@ -468,28 +470,46 @@ class BlueprintContext:
         flask.session[self.session_keys_session_cookie_id_str] = authsession_session_record.wolc_authsession__session__cookie_id
         flask.session[self.session_keys_user_id_str] = authsession_session_record.wolc_authaccounts__user__id
         flask.session.pop(self.session_keys_passkey_login_options_str, None)
-        redirect_url = (
-            flask.url_for(f'{self.blueprint.name}.page_passkeyOffer')
-            if self._passkey_offer_redirect_needed(user_id)
-            else flask.url_for('page_index')
-        )
-        return flask.jsonify({'redirect': redirect_url})
+        response = flask.jsonify({'redirect': flask.url_for('page_index')})
+        self._passkey_device_cookie_set(response, user_id)
+        return response
 
     def _passkey_offer_redirect_needed(self, user_id :int) -> bool:
         if not self.passkeys_enabled:
             return False
         if flask.session.get(self.session_keys_passkey_offer_skip_str):
             return False
+        return not self._passkey_device_cookie_matches(user_id)
+
+    def _passkey_device_cookie_serializer(self) -> URLSafeSerializer:
+        secret_key = flask.current_app.secret_key
+        if not secret_key:
+            raise RuntimeError('ERROR: Flask secret key is required for passkey device cookies.')
+        return URLSafeSerializer(secret_key, salt=f'{self.blueprint.name}-passkey-device')
+
+    def _passkey_device_cookie_matches(self, user_id :int) -> bool:
+        value = flask.request.cookies.get(self.cookie_keys_passkey_device_str)
+        if not value:
+            return False
         try:
-            user_record = self.dbModelContext.authaccounts_user_readByID(
-                user_id,
-                ('id', 'passkey_offer_dismissed'),
-            )
-        except ValueError:
+            payload = self._passkey_device_cookie_serializer().loads(value)
+        except BadSignature:
             return False
-        if bool(getattr(user_record, 'passkey_offer_dismissed', False)):
+        try:
+            return int(payload.get('user_id')) == int(user_id)
+        except (AttributeError, TypeError, ValueError):
             return False
-        return len(self.dbModelContext.authaccounts_passkeys_readByUserID(user_id)) == 0
+
+    def _passkey_device_cookie_set(self, flaskResponse, user_id :int) -> None:
+        payload = self._passkey_device_cookie_serializer().dumps({'user_id': int(user_id)})
+        flaskResponse.set_cookie(
+            self.cookie_keys_passkey_device_str,
+            payload,
+            max_age=365 * 24 * 60 * 60,
+            httponly=True,
+            secure=bool(flask.current_app.config.get('SESSION_COOKIE_SECURE', flask.request.is_secure)),
+            samesite='Lax',
+        )
 
     def _passkey_registration_context_clear(self):
         flask.session.pop(self.session_keys_passkey_register_options_str, None)
@@ -1266,11 +1286,12 @@ class BlueprintContext:
             action = flask.request.form.get('action', 'later')
             user_id = _auth_authsession_session_record.wolc_authaccounts__user__id
             if action == 'dismiss':
-                self.dbModelContext.authaccounts_user_passkey_offer_dismissed_set(user_id, True)
-                flask.session[self.session_keys_passkey_offer_skip_str] = True
+                flaskResponse = flask.redirect(flask.url_for('page_index'))
+                self._passkey_device_cookie_set(flaskResponse, user_id)
             else:
+                flaskResponse = flask.redirect(flask.url_for('page_index'))
                 flask.session[self.session_keys_passkey_offer_skip_str] = True
-            return flask.redirect(flask.url_for('page_index'))
+            return flaskResponse
         return flask.render_template(
             'auth/passkeyOffer.html',
             authsession_session_record=_auth_authsession_session_record,
@@ -1351,10 +1372,11 @@ class BlueprintContext:
             credential_json=payload,
             friendly_name=payload.get('friendly_name'),
         )
-        self.dbModelContext.authaccounts_user_passkey_offer_dismissed_set(context['user_id'], False)
         flask.session[self.session_keys_passkey_offer_skip_str] = True
         self._passkey_registration_context_clear()
-        return flask.jsonify({'ok': True})
+        flaskResponse = flask.jsonify({'ok': True})
+        self._passkey_device_cookie_set(flaskResponse, context['user_id'])
+        return flaskResponse
 
     @_authSessionRequired_static
     @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
