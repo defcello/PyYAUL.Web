@@ -20,6 +20,16 @@ import time
 import traceback
 
 
+DEFAULT_SECURITY_HEADERS = {
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Strict-Transport-Security': 'max-age=63072000; includeSubDomains',
+    'Content-Security-Policy': "default-src 'self'",
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+}
+
+
 PRIVILEGE_GROUPS_PATH = ('sudo', 'groups')
 PRIVILEGE_GROUPS_CREATE_PATH = ('sudo', 'groups', 'create')
 PRIVILEGE_GROUPS_READ_PATH = ('sudo', 'groups', 'read')
@@ -43,6 +53,24 @@ def _flaskResponse_cookies_copy(source, target):
 	"""Copies Set-Cookie headers from `source` to `target`."""
 	for cookie in source.headers.getlist('Set-Cookie'):
 		target.headers.add('Set-Cookie', cookie)
+
+
+def flaskResponse_securityHeaders_set(flaskResponse, headers :dict[str, str|None]|None =None):
+    """
+    Applies the project's default security headers to `flaskResponse`.
+
+    `headers` can override defaults per header name. A `None` value disables
+    that header entirely. Headers already present on the response are preserved
+    so route handlers can still set a custom CSP or similar policy.
+    """
+    resolved_headers = DEFAULT_SECURITY_HEADERS.copy()
+    if headers is not None:
+        resolved_headers.update(headers)
+    for header_name, header_value in resolved_headers.items():
+        if header_value is None or header_name in flaskResponse.headers:
+            continue
+        flaskResponse.headers[header_name] = header_value
+    return flaskResponse
 
 
 # --- Login brute-force protection ---
@@ -146,6 +174,7 @@ class BlueprintContext:
             blueprint_import_name :str,  #Usually `__name__` from the "blueprint.py" using this class.
             dbModelContext :DBModelContext,
             password_min_length :int =8,
+            security_headers :dict[str, str|None]|None =None,
     ):
         self.blueprint = flask.Blueprint(
             blueprint_name,
@@ -157,6 +186,8 @@ class BlueprintContext:
         self.session_keys_user_id_str = f'{blueprint_name}_session_user_id'
         self.dbModelContext = dbModelContext
         self.password_min_length = password_min_length
+        self.security_headers = {} if security_headers is None else dict(security_headers)
+        self.blueprint.after_request(self._response_security_headers_set)
         self.blueprint.route('/index', methods=['POST', 'GET'])(self.page_index)
         self.blueprint.route('/login', methods=['POST', 'GET'])(self.page_login)
         self.blueprint.route('/logout', methods=['POST', 'GET'])(self.page_logout)
@@ -173,6 +204,9 @@ class BlueprintContext:
         self.blueprint.route('/userUpdate', methods=['POST', 'GET'])(self.page_userUpdate)
         self.blueprint.route('/userResetPassword', methods=['POST', 'GET'])(self.page_userResetPassword)
         self.blueprint.route('/userViewAll', methods=['POST', 'GET'])(self.page_userViewAll)
+
+    def _response_security_headers_set(self, flaskResponse):
+        return flaskResponse_securityHeaders_set(flaskResponse, self.security_headers)
 
     @staticmethod
     def _authSessionRequired_static(func):
