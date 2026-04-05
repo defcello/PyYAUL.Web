@@ -11,7 +11,7 @@ This package is the Python counterpart to
 ## What's included
 
 **`pyyaul.web.auth`** — Complete authentication and authorization framework:
-- Flask blueprint: login/logout routes, CSRF protection, IP rate limiting, brute-force lockout escalation
+- Flask blueprint: login/logout routes, CSRF protection, IP rate limiting, per-user POST rate limiting, brute-force lockout escalation
 - Business logic: create/delete accounts, set passwords, privilege checks
 - Database layer: parameterized PostgreSQL schema (accounts + sessions + RBAC privilege hierarchy)
 - ORM model: 40+ methods for accounts, sessions, groups, and privileges
@@ -58,9 +58,20 @@ blueprint_ctx = BlueprintContext('myapp', ctx, ...)
 app.register_blueprint(blueprint_ctx.blueprint)
 ```
 
+Protected POST handlers can also opt into per-user throttling:
+
+```python
+@blueprint_ctx.blueprint.route('/account/password', methods=['POST'])
+@blueprint_ctx.authSessionRequired
+@blueprint_ctx.userRateLimit(max_requests=10, window_seconds=60)
+def page_account_password(myapp_authsession_session_record):
+    ...
+```
+
 ## Notes
 
 - IP rate limiting is **in-memory** and resets on server restart. Single-instance deployments only.
+- Per-user POST rate limiting is also **in-memory** and intended for single-instance deployments.
 - UPGRADE AT YOUR OWN RISK — backwards compatibility is not guaranteed between versions.
 
 ## License

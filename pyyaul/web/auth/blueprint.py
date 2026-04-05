@@ -84,6 +84,9 @@ _ip_attempt_lock = threading.Lock()
 _ip_attempt_log: dict = {}   # ip (str) -> deque of UTC POSIX timestamps
 _IP_RATE_WINDOW_SECONDS = 300   # 5-minute sliding window
 _IP_RATE_MAX_ATTEMPTS = 20      # max login attempts per IP per window
+_USER_RATE_LIMIT_RESPONSE_MESSAGE = 'Too many requests. Please try again later.'
+_AUTH_POST_RATE_MAX_REQUESTS = 10
+_AUTH_POST_RATE_WINDOW_SECONDS = 60
 
 
 def _ip_rate_check_and_record(ip :str) ->bool:
@@ -100,6 +103,48 @@ def _ip_rate_check_and_record(ip :str) ->bool:
         q.append(now_ts)
         return len(q) <= _IP_RATE_MAX_ATTEMPTS
 # --- End login brute-force protection ---
+
+
+class _UserRateLimiter:
+
+    """In-memory per-user POST rate limiter using a sliding window."""
+
+    def __init__(self, max_requests :int, window_seconds :float):
+        if window_seconds <= 0:
+            raise ValueError('ERROR: `window_seconds` must be positive.')
+        self.max_requests = int(max_requests)
+        self.window_seconds = float(window_seconds)
+        self._records: dict[int, deque[float]] = {}
+        self._lock = threading.Lock()
+        self._prune_thread = threading.Thread(target=self._prune_loop, daemon=True)
+        self._prune_thread.start()
+
+    def _prune_loop(self):
+        while True:
+            time.sleep(self.window_seconds)
+            self.prune_stale()
+
+    def prune_stale(self, cutoff_ts :float|None =None):
+        if cutoff_ts is None:
+            cutoff_ts = time.time() - self.window_seconds
+        with self._lock:
+            for user_id, timestamps in list(self._records.items()):
+                if len(timestamps) == 0 or timestamps[-1] <= cutoff_ts:
+                    del self._records[user_id]
+
+    def allow(self, user_id :int) -> bool:
+        now_ts = time.time()
+        cutoff_ts = now_ts - self.window_seconds
+        with self._lock:
+            timestamps = self._records.setdefault(int(user_id), deque())
+            while timestamps and timestamps[0] <= cutoff_ts:
+                timestamps.popleft()
+            if len(timestamps) >= self.max_requests:
+                if len(timestamps) == 0:
+                    del self._records[int(user_id)]
+                return False
+            timestamps.append(now_ts)
+            return True
 
 
 _PASSWORD_SUGGESTED_ALPHABET_UPPER = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
@@ -295,6 +340,17 @@ class BlueprintContext:
             return decorated_function
         return decorator
 
+    @staticmethod
+    def _userRateLimit_static(max_requests :int, window_seconds :float):
+        """Version of `userRateLimit` for use by this class's methods."""
+        def decorator(func):
+            @wraps(func)
+            def decorated_function(self, *args, **kargs):
+                assert(isinstance(self, BlueprintContext))
+                return self.userRateLimit(max_requests, window_seconds)(func, True)(self, *args, **kargs)
+            return decorated_function
+        return decorator
+
     def authSessionPrivilegeRequired(self, privilege_path :list[str]|str):
         """
         Function decorator that will only call the wrapped function if the user
@@ -351,6 +407,52 @@ class BlueprintContext:
             return decorated_function
         return decorator
 
+    def _userRateLimit_authsession_session_record_read(self, kargs :dict) ->object|None:
+        authsession_session_record = kargs.get('_auth_authsession_session_record')
+        if authsession_session_record is not None:
+            return authsession_session_record
+        authsession_session_record = kargs.get(f'{self.blueprint.name}_authsession_session_record')
+        if authsession_session_record is not None:
+            return authsession_session_record
+        return self._authsession_session_record_read()
+
+    def userRateLimit(self, max_requests :int, window_seconds :float):
+        """
+        Function decorator that limits authenticated POST requests per user
+        within a sliding time window.
+
+        GET requests always pass through. Unauthenticated requests also pass
+        through unchanged so login or IP-level protections can handle them.
+
+        Usage:
+        ```
+            @app.route('/account/password', methods=('POST', 'GET'))
+            @authSessionRequired
+            @userRateLimit(max_requests=10, window_seconds=60)
+            def page_account_password(adminauth_authsession_session_record):
+                ...
+        ```
+        """
+        limiter = _UserRateLimiter(max_requests, window_seconds)
+
+        def decorator(func, _useInternalKarg :bool =False):
+            @wraps(func)
+            def decorated_function(*args, **kargs):
+                if flask.request.method != 'POST':
+                    return func(*args, **kargs)
+                authsession_session_record = self._userRateLimit_authsession_session_record_read(kargs)
+                if authsession_session_record is None:
+                    return func(*args, **kargs)
+                user_id = getattr(authsession_session_record, 'wolc_authaccounts__user__id', None)
+                if user_id is None:
+                    return func(*args, **kargs)
+                if not limiter.allow(int(user_id)):
+                    return flask.make_response(_USER_RATE_LIMIT_RESPONSE_MESSAGE, 429)
+                return func(*args, **kargs)
+            return decorated_function
+
+        return decorator
+
     @staticmethod
     def _privilege_name_validate(privilege_name :str) -> str:
         privilege_name = privilege_name.strip()
@@ -388,6 +490,7 @@ class BlueprintContext:
 
     @_authSessionPrivilegeRequired_static(PRIVILEGE_GROUPS_READ_PATH)
     @_authSessionPrivilegeRequired_static(PRIVILEGE_GROUPS_CREATE_PATH)
+    @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
     def page_groupCreate(self, _auth_authsession_session_record):
         flaskResponse = flask.make_response()
         if flask.request.method == 'POST':
@@ -422,6 +525,7 @@ class BlueprintContext:
         return flaskResponse
 
     @_authSessionPrivilegeRequired_static(PRIVILEGE_GROUPS_READ_PATH)
+    @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
     def page_groupMembers(self, _auth_authsession_session_record):
         flaskResponse = flask.make_response()
         caller_user_id = _auth_authsession_session_record.wolc_authaccounts__user__id
@@ -473,6 +577,7 @@ class BlueprintContext:
         return flaskResponse
 
     @_authSessionPrivilegeRequired_static(PRIVILEGE_GROUPS_READ_PATH)
+    @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
     def page_groupUpdate(self, _auth_authsession_session_record):
         flaskResponse = flask.make_response()
         caller_user_id = _auth_authsession_session_record.wolc_authaccounts__user__id
@@ -577,6 +682,7 @@ class BlueprintContext:
         return flaskResponse
 
     @_authSessionPrivilegeRequired_static(PRIVILEGE_GROUPS_READ_PATH)
+    @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
     def page_groupViewAll(self, _auth_authsession_session_record):
         flaskResponse = flask.make_response()
         caller_user_id = _auth_authsession_session_record.wolc_authaccounts__user__id
@@ -647,6 +753,7 @@ class BlueprintContext:
         return flaskResponse
 
     @_authSessionRequired_static
+    @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
     def page_index(self, _auth_authsession_session_record):
         flaskResponse = flask.make_response()
         flaskResponse = flask.redirect(flask.url_for(f'{self.blueprint.name}.page_userViewAll'))
@@ -779,6 +886,7 @@ class BlueprintContext:
         return flaskResponse
 
     @_authSessionRequired_static
+    @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
     def page_logout(self, _auth_authsession_session_record):
         flaskResponse = flask.make_response()
         self.dbModelContext.authsession_session_deleteByID(
@@ -789,6 +897,7 @@ class BlueprintContext:
 
     @_authSessionPrivilegeRequired_static(PRIVILEGE_PRIVILEGES_READ_PATH)
     @_authSessionPrivilegeRequired_static(PRIVILEGE_PRIVILEGES_CREATE_PATH)
+    @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
     def page_privilegeCreate(self, _auth_authsession_session_record):
         flaskResponse = flask.make_response()
         try:
@@ -833,6 +942,7 @@ class BlueprintContext:
         return flaskResponse
 
     @_authSessionPrivilegeRequired_static(PRIVILEGE_PRIVILEGES_DELETE_PATH)
+    @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
     def page_privilegeDelete(self, _auth_authsession_session_record):
         flaskResponse = flask.make_response()
         try:
@@ -876,6 +986,7 @@ class BlueprintContext:
         return flaskResponse
 
     @_authSessionPrivilegeRequired_static(PRIVILEGE_PRIVILEGES_UPDATE_PATH)
+    @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
     def page_privilegeUpdate(self, _auth_authsession_session_record):
         flaskResponse = flask.make_response()
         try:
@@ -919,6 +1030,7 @@ class BlueprintContext:
         return flaskResponse
 
     @_authSessionPrivilegeRequired_static(PRIVILEGE_PRIVILEGES_READ_PATH)
+    @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
     def page_privilegeViewAll(self, _auth_authsession_session_record):
         flaskResponse = flask.make_response()
         if flask.request.method == 'POST':
@@ -986,6 +1098,7 @@ class BlueprintContext:
         return flaskResponse
 
     @_authSessionRequired_static
+    @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
     def page_userCreate(self, _auth_authsession_session_record):
         flaskResponse = flask.make_response()
         caller_is_super_auth = self.dbModelContext.authaccounts_user_allowPrivilege_read(
@@ -1042,6 +1155,7 @@ class BlueprintContext:
         return flaskResponse
 
     @_authSessionRequired_static
+    @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
     def page_userDelete(self, _auth_authsession_session_record):
         flaskResponse = flask.make_response()
         try:
@@ -1087,6 +1201,7 @@ class BlueprintContext:
         return flaskResponse
 
     @_authSessionRequired_static
+    @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
     def page_userUpdate(self, _auth_authsession_session_record):
         flaskResponse = flask.make_response()
         try:
@@ -1184,6 +1299,7 @@ class BlueprintContext:
         return flaskResponse
 
     @_authSessionRequired_static
+    @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
     def page_userResetPassword(self, _auth_authsession_session_record):
         flaskResponse = flask.make_response()
         try:
@@ -1244,6 +1360,7 @@ class BlueprintContext:
         return flaskResponse
 
     @_authSessionRequired_static
+    @_userRateLimit_static(_AUTH_POST_RATE_MAX_REQUESTS, _AUTH_POST_RATE_WINDOW_SECONDS)
     def page_userViewAll(self, _auth_authsession_session_record):
         flaskResponse = flask.make_response()
         caller_user_id = _auth_authsession_session_record.wolc_authaccounts__user__id
