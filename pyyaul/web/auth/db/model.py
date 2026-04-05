@@ -285,26 +285,26 @@ class DBModelContext:
         while privilege_id is None and len(search_path_parts) > 0:
             privilege_id = self.authaccounts_privilege_read(search_path_parts)
             search_path_parts = search_path_parts[:-1]
+        rule_id = None
         if privilege_id is not None:
             dbORM = self.dbORM_authAccounts_RO
             with dbORM.session() as dbSession:
                 query = text(f"""
-                    SELECT COALESCE(
-                            {self.dbSchema.accountsSchemaName}.function_user_has_privilege(
-                                :user_id
-                                , :privilege_id
-                            )
-                            , FALSE
-                        )
+                    SELECT r.allowed, r.rule_id
+                        FROM {self.dbSchema.accountsSchemaName}.function_user_has_privilege_nocache_with_rule(
+                            :user_id
+                            , :privilege_id
+                        ) AS r
                     ;
                 """)
-                result = dbSession.execute(query, {
+                row = dbSession.execute(query, {
                     'user_id': user_id,
                     'privilege_id': privilege_id,
-                }).scalar_one()
-                ret = bool(result)
+                }).fetchone()
+                ret = bool(row.allowed)
+                rule_id = row.rule_id
             if session_id is not None:
-                self.authaccounts_privilege_log_write(session_id, privilege_id, ret)
+                self.authaccounts_privilege_log_write(session_id, privilege_id, ret, allow_rule_id=rule_id)
         return ret
 
     def authaccounts_privilege_log_write(
@@ -312,10 +312,14 @@ class DBModelContext:
             session_id :int,
             privilege_id :int,
             allowed :bool,
+            allow_rule_id :int|None =None,
     ) ->None:
         """
         Appends a row to `table_privilege_log` recording that `session_id`
         requested `privilege_id` and was granted or denied.
+
+        `allow_rule_id` is the `table_privilege_group_allow.id` of the winning
+        rule, or `None` when the deny was implicit (no matching rule existed).
 
         Errors are printed and suppressed so that a logging failure never
         blocks the request being audited.
@@ -326,18 +330,19 @@ class DBModelContext:
                 dbSession.execute(
                     text(f"""
                         INSERT INTO {self.dbSchema.sessionsSchemaName}.table_privilege_log
-                            (session_id, privilege_id, allowed)
-                        VALUES (:session_id, :privilege_id, :allowed)
+                            (session_id, privilege_id, privilege_user_allow_id, allowed)
+                        VALUES (:session_id, :privilege_id, :allow_rule_id, :allowed)
                         ;
                     """),
                     {
                         'session_id': session_id,
                         'privilege_id': privilege_id,
+                        'allow_rule_id': allow_rule_id,
                         'allowed': allowed,
                     },
                 )
         except Exception as e:
-            print(f'ERROR writing privilege log: {session_id=}; {privilege_id=}; {allowed=}; {e}')
+            print(f'ERROR writing privilege log: {session_id=}; {privilege_id=}; {allowed=}; {allow_rule_id=}; {e}')
 
     def authaccounts_user_create(
             self,

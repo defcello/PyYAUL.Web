@@ -429,6 +429,103 @@ class SchemaV0_Base(Version):
         """))
         event.listen(metadata, "after_create", create_function_user_has_privilege_nocache)
         event.listen(metadata, "before_drop", drop_function_user_has_privilege_nocache)
+        #### `function_user_has_privilege_nocache_with_rule` ########################################
+        #Like `function_user_has_privilege_nocache` but also returns the `table_privilege_group_allow.id`
+        #of the winning rule so it can be recorded in `table_privilege_log.privilege_user_allow_id`.
+        #Returns NULL for `rule_id` when no matching rule exists (implicit deny).
+        create_function_user_has_privilege_nocache_with_rule = DDL(d(f"""
+            CREATE OR REPLACE FUNCTION {self.accountsSchemaName}.function_user_has_privilege_nocache_with_rule(
+                    p_group_user_id  integer,
+                    p_privilege_id   integer,
+                    OUT allowed      boolean,
+                    OUT rule_id      integer
+            )
+                RETURNS RECORD
+                LANGUAGE sql
+                STABLE
+                AS $$
+                    WITH RECURSIVE
+                        -- 1) Build subject list: user (depth 0) + all ancestor groups (depth 1..N)
+                        subjects AS (
+                            SELECT
+                                p_group_user_id::int AS subject_id,
+                                0              AS subject_depth,
+                                ARRAY[p_group_user_id]::int[] AS path
+
+                            UNION ALL
+
+                            SELECT
+                                gu.group_user_id AS subject_id,
+                                s.subject_depth + 1 AS subject_depth,
+                                s.path || gu.group_user_id
+                            FROM subjects s
+                            JOIN {self.accountsSchemaName}.table_group_user gu
+                              ON gu.deleted IS NULL
+                             AND gu.user_id = s.subject_id
+                            JOIN {self.accountsSchemaName}.table_user g
+                              ON g.id = gu.group_user_id
+                             AND g.deleted IS NULL
+                             AND g.is_group IS TRUE
+                            WHERE NOT (gu.group_user_id = ANY(s.path))  -- cycle protection
+                        ),
+
+                        -- 2) Build privilege list: privilege (depth 0) + all ancestor privileges (depth 1..N)
+                        privs AS (
+                            SELECT
+                                p_privilege_id::int AS priv_id,
+                                0                   AS priv_depth,
+                                ARRAY[p_privilege_id]::int[] AS path
+
+                            UNION ALL
+
+                            SELECT
+                                p.parent_id AS priv_id,
+                                pr.priv_depth + 1 AS priv_depth,
+                                pr.path || p.parent_id
+                            FROM privs pr
+                            JOIN {self.accountsSchemaName}.table_privilege p
+                              ON p.deleted IS NULL
+                             AND p.id = pr.priv_id
+                            WHERE p.parent_id IS NOT NULL
+                              AND NOT (p.parent_id = ANY(pr.path))      -- cycle protection
+                        ),
+
+                        -- 3) Find all matching allow/deny rules across (subject, privilege-ancestor)
+                        matches AS (
+                            SELECT
+                                a.id      AS rule_id,
+                                a.allow,
+                                s.subject_depth,
+                                pr.priv_depth
+                            FROM subjects s
+                            JOIN privs pr ON true
+                            JOIN {self.accountsSchemaName}.table_privilege_group_allow a
+                              ON a.deleted IS NULL
+                             AND a.group_user_id = s.subject_id
+                             AND a.privilege_id = pr.priv_id
+                        ),
+
+                        -- 4) Highest-priority match (most-specific subject, then most-specific privilege)
+                        winner AS (
+                            SELECT rule_id, allow
+                            FROM matches
+                            ORDER BY subject_depth ASC, priv_depth ASC
+                            LIMIT 1
+                        )
+
+                        SELECT
+                            COALESCE((SELECT allow    FROM winner), FALSE),
+                            (SELECT rule_id FROM winner)
+                    ;
+                $$
+            ;
+        """))
+        drop_function_user_has_privilege_nocache_with_rule = DDL(d(f"""
+            DROP FUNCTION IF EXISTS {self.accountsSchemaName}.function_user_has_privilege_nocache_with_rule(integer, integer)
+            ;
+        """))
+        event.listen(metadata, "after_create", create_function_user_has_privilege_nocache_with_rule)
+        event.listen(metadata, "before_drop", drop_function_user_has_privilege_nocache_with_rule)
         #### `view_privilege_group_allow_cache` #####################################################
         #Expresses all assignments of specific privileges to specific groups.
         create_view_privilege_group_allow_cache = DDL(d(f"""
@@ -663,7 +760,7 @@ class SchemaV0_Base(Version):
             Column('id', Integer, primary_key=True),
             Column('created', DateTime(timezone=True), nullable=False, server_default=text("timezone('utc'::text, now())")),  #Time that the privilege was requested.
             Column('privilege_id', Integer, ForeignKey(f'{self.accountsSchemaName}.table_privilege.id'), nullable=False),  #Specific privilege being requested.
-            Column('privilege_user_allow_id', Integer, ForeignKey(f'{self.accountsSchemaName}.table_privilege.id'), nullable=True),  #Specific rule used to make the ALLOW/DENY decision.  May be NULL if privilege was denied due to no applicable "ALLOW" rule.
+            Column('privilege_user_allow_id', Integer, ForeignKey(f'{self.accountsSchemaName}.table_privilege_group_allow.id'), nullable=True),  #Specific rule used to make the ALLOW/DENY decision.  May be NULL if privilege was denied due to no applicable "ALLOW" rule.
             Column('session_id', Integer, ForeignKey(f'{self.sessionsSchemaName}.table_session.id'), nullable=False),  #Login session requesting the privilege.
             Column('allowed', Boolean, nullable=False),  #`TRUE` if the privilege was granted; `FALSE` if denied.
             schema=self.sessionsSchemaName,
