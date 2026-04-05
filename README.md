@@ -252,7 +252,11 @@ layout.
 from pyyaul.web import execommon as web_execommon
 from pyyaul.web.auth.db.schema.v0 import SchemaV0_Base
 from pyyaul.web.auth.db.model import DBModelContext
-from pyyaul.web.auth.blueprint import BlueprintContext, flaskApp_proxyFix_apply
+from pyyaul.web.auth.blueprint import (
+    BlueprintContext,
+    flaskApp_httpsRedirect_apply,
+    flaskApp_proxyFix_apply,
+)
 
 # 1. Define your schema (parameterized by PostgreSQL schema names)
 class MySchema(SchemaV0_Base):
@@ -274,7 +278,13 @@ ctx = DBModelContext(
 # 4. Trust forwarded headers if the app runs behind a reverse proxy
 flaskApp_proxyFix_apply(app, WEBCTX.cfgGet('FLASK', 'PROXY_FIX', {}))
 
-# 5. Register the Flask blueprint
+# 5. Optionally redirect plaintext requests to HTTPS in public deployments
+flaskApp_httpsRedirect_apply(
+    app,
+    enabled=WEBCTX.cfgGet('FLASK', ('HTTPS_REDIRECT', 'ENABLED'), False),
+)
+
+# 6. Register the Flask blueprint
 blueprint_ctx = BlueprintContext('adminauth', __name__, ctx)
 app.register_blueprint(blueprint_ctx.blueprint)
 ```
@@ -299,6 +309,46 @@ and audit logs:
 Set `x_for` to the exact number of trusted proxy hops in front of the app.
 Setting it higher than your real proxy chain allows spoofed `X-Forwarded-For`
 headers and undermines IP-based protections.
+
+To opt into HTTP to HTTPS redirects for public-facing deployments:
+
+```json
+{
+  "FLASK": {
+    "HTTPS_REDIRECT": {
+      "ENABLED": true
+    }
+  }
+}
+```
+
+`flaskApp_httpsRedirect_apply(...)` only redirects plaintext requests. When
+`ProxyFix` is configured correctly, requests that already arrived over HTTPS at
+the reverse proxy and were forwarded with `X-Forwarded-Proto: https` continue
+normally. Localhost-style hosts remain exempt by default so local development
+and LAN-only testing stay practical.
+
+`PyYAUL.Web` also emits `Strict-Transport-Security:
+max-age=63072000; includeSubDomains` on HTTPS responses only. Plain HTTP
+responses intentionally omit HSTS so mixed LAN/bootstrap environments are not
+forced into HTTPS accidentally.
+
+For public deployments, set Flask's session cookie policy explicitly before
+registering the blueprint:
+
+```python
+app.config.update(
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+)
+```
+
+The passkey device cookie already follows the same expectation: it uses
+`Secure` when the request is HTTPS or when `SESSION_COOKIE_SECURE` is enabled,
+and it uses `SameSite=Lax` so login and passkey-offer flows still work with
+normal top-level navigation. If your deployment needs cross-site embedding or
+federated flows, review Flask session-cookie settings carefully before relaxing
+`SameSite`.
 
 Protected POST handlers can also opt into per-user throttling:
 

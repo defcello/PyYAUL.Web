@@ -27,10 +27,10 @@ DEFAULT_SECURITY_HEADERS = {
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'strict-origin-when-cross-origin',
-    'Strict-Transport-Security': 'max-age=63072000; includeSubDomains',
     'Content-Security-Policy': "default-src 'self'",
     'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
 }
+DEFAULT_HSTS_HEADER_VALUE = 'max-age=63072000; includeSubDomains'
 _REQUEST_LOGGER_NAME = 'pyyaul.web.request'
 _REQUEST_START_TIME_KEY = '_pyyaul_request_start_time'
 
@@ -71,11 +71,56 @@ def flaskResponse_securityHeaders_set(flaskResponse, headers :dict[str, str|None
     resolved_headers = DEFAULT_SECURITY_HEADERS.copy()
     if headers is not None:
         resolved_headers.update(headers)
+    if flask.has_request_context() and not flask.request.is_secure:
+        resolved_headers['Strict-Transport-Security'] = None
+        flaskResponse.headers.pop('Strict-Transport-Security', None)
+    else:
+        resolved_headers.setdefault('Strict-Transport-Security', DEFAULT_HSTS_HEADER_VALUE)
     for header_name, header_value in resolved_headers.items():
         if header_value is None or header_name in flaskResponse.headers:
             continue
         flaskResponse.headers[header_name] = header_value
     return flaskResponse
+
+
+def _request_host_matches_localhost(request_host :str|None) -> bool:
+    if not request_host:
+        return False
+    host = request_host.rsplit('@', 1)[-1]
+    if host.startswith('['):
+        host = host[1:].split(']', 1)[0]
+    else:
+        host = host.split(':', 1)[0]
+    host = host.lower()
+    return host in {'localhost', '127.0.0.1', '::1'} or host.endswith('.localhost')
+
+
+def flaskApp_httpsRedirect_apply(
+        app :flask.Flask,
+        enabled :bool =False,
+        trust_localhost :bool =True,
+        redirect_code :int =301,
+) -> flask.Flask:
+    """
+    Redirects plaintext HTTP requests to HTTPS when enabled.
+
+    This is intended for deployments behind a public reverse proxy or load
+    balancer. Apply `flaskApp_proxyFix_apply(...)` first when TLS terminates
+    upstream so `flask.request.is_secure` reflects the forwarded scheme.
+    """
+    if not enabled:
+        return app
+
+    @app.before_request
+    def _pyyaul_https_redirect():
+        if flask.request.is_secure:
+            return None
+        if trust_localhost and _request_host_matches_localhost(flask.request.host):
+            return None
+        target = flask.request.url.replace('http://', 'https://', 1)
+        return flask.redirect(target, code=int(redirect_code))
+
+    return app
 
 
 # --- Login brute-force protection ---

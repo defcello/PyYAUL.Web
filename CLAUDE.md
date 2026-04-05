@@ -54,6 +54,11 @@ and login audit logging. Consumer apps deployed behind a reverse proxy must
 apply `flaskApp_proxyFix_apply(app, cfgGet('FLASK', 'PROXY_FIX', {}))` before
 registering the blueprint so forwarded client IPs are trusted correctly.
 
+For public HTTPS deployments, consumers can also opt into
+`flaskApp_httpsRedirect_apply(...)` after `ProxyFix` so plaintext requests are
+redirected to HTTPS while localhost development stays exempt by default. HSTS
+is only emitted on HTTPS responses.
+
 Use a `cfg.json` shape like:
 
 ```json

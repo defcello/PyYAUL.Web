@@ -15,7 +15,9 @@ from pyyaul.web.auth.blueprint import (
     _UserRateLimiter,
     BlueprintContext,
     DEFAULT_SECURITY_HEADERS,
+    DEFAULT_HSTS_HEADER_VALUE,
     _REQUEST_LOGGER_NAME,
+    flaskApp_httpsRedirect_apply,
     flaskApp_proxyFix_apply,
     flaskResponse_securityHeaders_set,
 )
@@ -43,9 +45,11 @@ class Test_flaskResponse_securityHeaders_set(TestCase):
 
         flaskResponse_securityHeaders_set(response)
 
-        self.assertEqual(dict(DEFAULT_SECURITY_HEADERS), {
+        expected_headers = dict(DEFAULT_SECURITY_HEADERS)
+        expected_headers['Strict-Transport-Security'] = DEFAULT_HSTS_HEADER_VALUE
+        self.assertEqual(expected_headers, {
             key: response.headers.get(key)
-            for key in DEFAULT_SECURITY_HEADERS
+            for key in expected_headers
         })
 
     def test_preserves_route_specific_header_values(self):
@@ -73,6 +77,25 @@ class Test_flaskResponse_securityHeaders_set(TestCase):
             response.headers['Content-Security-Policy'],
         )
         self.assertNotIn('Permissions-Policy', response.headers)
+
+    def test_skips_hsts_outside_secure_request_context(self):
+        response = flask.make_response('ok')
+
+        with self.app.test_request_context('/probe', base_url='http://example.com'):
+            flaskResponse_securityHeaders_set(response)
+
+        self.assertNotIn('Strict-Transport-Security', response.headers)
+
+    def test_sets_hsts_for_secure_requests_only(self):
+        response = flask.make_response('ok')
+
+        with self.app.test_request_context('/probe', base_url='https://example.com'):
+            flaskResponse_securityHeaders_set(response)
+
+        self.assertEqual(
+            DEFAULT_HSTS_HEADER_VALUE,
+            response.headers.get('Strict-Transport-Security'),
+        )
 
 
 class Test_BlueprintContext_security_headers(TestCase):
@@ -228,6 +251,61 @@ class Test_flaskApp_proxyFix_apply(TestCase):
     def test_rejects_invalid_trusted_hop_values(self):
         with self.assertRaisesRegex(ValueError, 'Invalid ProxyFix setting'):
             flaskApp_proxyFix_apply(self.app, {'x_for': 'abc'})
+
+
+class Test_flaskApp_httpsRedirect_apply(TestCase):
+
+    def setUp(self):
+        self.app = flask.Flask(__name__)
+        self.app.secret_key = 'testing'
+
+        @self.app.route('/probe')
+        def page_probe():
+            return 'ok'
+
+    def test_redirects_plain_http_requests_when_enabled(self):
+        flaskApp_httpsRedirect_apply(self.app, enabled=True)
+
+        response = self.app.test_client().get(
+            '/probe?next=%2Fsettings',
+            base_url='http://example.com',
+            follow_redirects=False,
+        )
+
+        self.assertEqual(301, response.status_code)
+        self.assertEqual(
+            'https://example.com/probe?next=/settings',
+            response.headers['Location'],
+        )
+
+    def test_skips_localhost_requests_by_default(self):
+        flaskApp_httpsRedirect_apply(self.app, enabled=True)
+
+        response = self.app.test_client().get(
+            '/probe',
+            base_url='http://localhost',
+            follow_redirects=False,
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual('ok', response.get_data(as_text=True))
+
+    def test_respects_proxy_fix_forwarded_https_requests(self):
+        flaskApp_proxyFix_apply(self.app, {'x_proto': 1, 'x_host': 1})
+        flaskApp_httpsRedirect_apply(self.app, enabled=True)
+
+        response = self.app.test_client().get(
+            '/probe',
+            headers={
+                'X-Forwarded-Proto': 'https',
+                'X-Forwarded-Host': 'example.com',
+            },
+            environ_overrides={'HTTP_HOST': 'internal-proxy'},
+            follow_redirects=False,
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual('ok', response.get_data(as_text=True))
 
 
 class Test__UserRateLimiter(TestCase):
