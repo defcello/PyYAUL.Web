@@ -261,6 +261,7 @@ class DBModelContext:
             self,
             user_id :int,
             privilege_path :list[str]|str,
+            session_id :int|None =None,
     ) ->bool:
         """
         Returns `True` if ``user_id` should be allowed `privilege_name` and
@@ -273,6 +274,9 @@ class DBModelContext:
         If the exact privilege path does not exist, this falls back to the
         nearest existing ancestor so newly introduced child privileges can be
         bootstrapped by older parent grants.
+
+        When `session_id` is provided, the result is written to
+        `table_privilege_log` so that all access-control decisions are auditable.
         """
         ret = False
         privilege_path_parts = (privilege_path,) if isinstance(privilege_path, str) else tuple(privilege_path)
@@ -299,7 +303,41 @@ class DBModelContext:
                     'privilege_id': privilege_id,
                 }).scalar_one()
                 ret = bool(result)
+            if session_id is not None:
+                self.authaccounts_privilege_log_write(session_id, privilege_id, ret)
         return ret
+
+    def authaccounts_privilege_log_write(
+            self,
+            session_id :int,
+            privilege_id :int,
+            allowed :bool,
+    ) ->None:
+        """
+        Appends a row to `table_privilege_log` recording that `session_id`
+        requested `privilege_id` and was granted or denied.
+
+        Errors are printed and suppressed so that a logging failure never
+        blocks the request being audited.
+        """
+        try:
+            dbORM = self.dbORM_authSessions_RW
+            with dbORM.session() as dbSession:
+                dbSession.execute(
+                    text(f"""
+                        INSERT INTO {self.dbSchema.sessionsSchemaName}.table_privilege_log
+                            (session_id, privilege_id, allowed)
+                        VALUES (:session_id, :privilege_id, :allowed)
+                        ;
+                    """),
+                    {
+                        'session_id': session_id,
+                        'privilege_id': privilege_id,
+                        'allowed': allowed,
+                    },
+                )
+        except Exception as e:
+            print(f'ERROR writing privilege log: {session_id=}; {privilege_id=}; {allowed=}; {e}')
 
     def authaccounts_user_create(
             self,

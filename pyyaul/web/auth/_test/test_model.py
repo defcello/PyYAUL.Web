@@ -48,6 +48,7 @@ class Test_authAccountsRecord_delete(TestCase):
 		self.m = model
 		self.session = MagicMock()
 		self.session.wolc_authaccounts__user__id = 99
+		self.session.wolc_authsession__session__id = 11
 
 	def test_no_sudo_raises(self):
 		ctx = MagicMock()
@@ -61,6 +62,14 @@ class Test_authAccountsRecord_delete(TestCase):
 		self.m.authAccountsRecord_delete(ctx, self.session, target_user_id=7)
 		ctx.authaccounts_user_delete.assert_called_once_with(7, 99)
 
+	def test_privilege_check_passes_session_id(self):
+		ctx = MagicMock()
+		ctx.authaccounts_user_allowPrivilege_read.return_value = True
+		self.m.authAccountsRecord_delete(ctx, self.session, target_user_id=7)
+		ctx.authaccounts_user_allowPrivilege_read.assert_called_once_with(
+			99, ('sudo',), session_id=11
+		)
+
 
 class Test_authAccountsRecord_info_set(TestCase):
 
@@ -69,6 +78,7 @@ class Test_authAccountsRecord_info_set(TestCase):
 		self.m = model
 		self.session = MagicMock()
 		self.session.wolc_authaccounts__user__id = 10
+		self.session.wolc_authsession__session__id = 22
 
 	def _call(self, ctx, target_user_id):
 		self.m.authAccountsRecord_info_set(
@@ -94,6 +104,14 @@ class Test_authAccountsRecord_info_set(TestCase):
 		self._call(ctx, target_user_id=99)
 		ctx.authaccounts_user_info_set.assert_called_once()
 
+	def test_privilege_check_passes_session_id(self):
+		ctx = MagicMock()
+		ctx.authaccounts_user_allowPrivilege_read.return_value = True
+		self._call(ctx, target_user_id=99)
+		ctx.authaccounts_user_allowPrivilege_read.assert_called_once_with(
+			10, ('sudo',), session_id=22
+		)
+
 
 class Test_authAccountsRecord_isSuperauth_set(TestCase):
 
@@ -102,6 +120,7 @@ class Test_authAccountsRecord_isSuperauth_set(TestCase):
 		self.m = model
 		self.session = MagicMock()
 		self.session.wolc_authaccounts__user__id = 1
+		self.session.wolc_authsession__session__id = 33
 
 	def test_no_sudo_raises(self):
 		ctx = MagicMock()
@@ -122,3 +141,11 @@ class Test_authAccountsRecord_isSuperauth_set(TestCase):
 		self.m.authAccountsRecord_isSuperauth_set(ctx, self.session, 5, False)
 		ctx.authaccounts_sudoers_group_user_remove.assert_called_once_with(5, 1)
 		ctx.authaccounts_sudoers_group_user_add.assert_not_called()
+
+	def test_privilege_check_passes_session_id(self):
+		ctx = MagicMock()
+		ctx.authaccounts_user_allowPrivilege_read.return_value = True
+		self.m.authAccountsRecord_isSuperauth_set(ctx, self.session, 5, True)
+		ctx.authaccounts_user_allowPrivilege_read.assert_called_once_with(
+			1, ('sudo',), session_id=33
+		)

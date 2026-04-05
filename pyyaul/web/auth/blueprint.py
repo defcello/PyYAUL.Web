@@ -303,6 +303,7 @@ class BlueprintContext:
                 if not self.dbModelContext.authaccounts_user_allowPrivilege_read(
                         authsession_session_record.wolc_authaccounts__user__id,
                         privilege_path,
+                        session_id=authsession_session_record.wolc_authsession__session__id,
                 ):
                     flask.flash(f'Access Denied.  If you need access, ask for the privilege at `{privilege_path!r}`.')
                     print('WARNING User has not been granted access; rerouting to login page.')
@@ -393,6 +394,7 @@ class BlueprintContext:
         group_users_update_allow = self.dbModelContext.authaccounts_user_allowPrivilege_read(
             caller_user_id,
             PRIVILEGE_GROUPS_UPDATE_USERS_PATH,
+            session_id=_auth_authsession_session_record.wolc_authsession__session__id,
         )
         try:
             targetGroup_id = int((flask.request.args if flask.request.method == 'GET' else flask.request.form)['group_id'])
@@ -443,10 +445,12 @@ class BlueprintContext:
         group_name_update_allow = self.dbModelContext.authaccounts_user_allowPrivilege_read(
             caller_user_id,
             PRIVILEGE_GROUPS_UPDATE_NAME_PATH,
+            session_id=_auth_authsession_session_record.wolc_authsession__session__id,
         )
         group_privileges_update_allow = self.dbModelContext.authaccounts_user_allowPrivilege_read(
             caller_user_id,
             PRIVILEGE_GROUPS_UPDATE_PRIVILEGES_PATH,
+            session_id=_auth_authsession_session_record.wolc_authsession__session__id,
         )
         mode = flask.request.args.get('mode', flask.request.form.get('mode', 'rename')).strip().lower()
         if mode not in ('rename', 'privileges'):
@@ -545,18 +549,22 @@ class BlueprintContext:
         group_create_allow = self.dbModelContext.authaccounts_user_allowPrivilege_read(
             caller_user_id,
             PRIVILEGE_GROUPS_CREATE_PATH,
+            session_id=_auth_authsession_session_record.wolc_authsession__session__id,
         )
         group_name_update_allow = self.dbModelContext.authaccounts_user_allowPrivilege_read(
             caller_user_id,
             PRIVILEGE_GROUPS_UPDATE_NAME_PATH,
+            session_id=_auth_authsession_session_record.wolc_authsession__session__id,
         )
         group_users_update_allow = self.dbModelContext.authaccounts_user_allowPrivilege_read(
             caller_user_id,
             PRIVILEGE_GROUPS_UPDATE_USERS_PATH,
+            session_id=_auth_authsession_session_record.wolc_authsession__session__id,
         )
         group_privileges_update_allow = self.dbModelContext.authaccounts_user_allowPrivilege_read(
             caller_user_id,
             PRIVILEGE_GROUPS_UPDATE_PRIVILEGES_PATH,
+            session_id=_auth_authsession_session_record.wolc_authsession__session__id,
         )
         if flask.request.method == 'POST':
             action = flask.request.form.get('action')
@@ -917,14 +925,17 @@ class BlueprintContext:
             privilege__privilege_create_allow = self.dbModelContext.authaccounts_user_allowPrivilege_read(
                 caller_user_id,
                 PRIVILEGE_PRIVILEGES_CREATE_PATH,
+                session_id=_auth_authsession_session_record.wolc_authsession__session__id,
             )
             privilege__privilege_update_allow = self.dbModelContext.authaccounts_user_allowPrivilege_read(
                 caller_user_id,
                 PRIVILEGE_PRIVILEGES_UPDATE_PATH,
+                session_id=_auth_authsession_session_record.wolc_authsession__session__id,
             )
             privilege__privilege_delete_allow = self.dbModelContext.authaccounts_user_allowPrivilege_read(
                 caller_user_id,
                 PRIVILEGE_PRIVILEGES_DELETE_PATH,
+                session_id=_auth_authsession_session_record.wolc_authsession__session__id,
             )
             authaccounts_privileges_sorted = sorted(
                 self.dbModelContext.authaccounts_privileges_read().values(),
@@ -944,7 +955,8 @@ class BlueprintContext:
     def page_userCreate(self, _auth_authsession_session_record):
         flaskResponse = flask.make_response()
         caller_is_super_auth = self.dbModelContext.authaccounts_user_allowPrivilege_read(
-            _auth_authsession_session_record.wolc_authaccounts__user__id, ('sudo',)
+            _auth_authsession_session_record.wolc_authaccounts__user__id, ('sudo',),
+            session_id=_auth_authsession_session_record.wolc_authsession__session__id,
         )
         if not caller_is_super_auth:
             flask.flash('Must log in with a super-auth account to create new administrator accounts.')
@@ -1004,7 +1016,8 @@ class BlueprintContext:
             traceback.print_exc()
             targetUser_id = None
         caller_is_super_auth = self.dbModelContext.authaccounts_user_allowPrivilege_read(
-            _auth_authsession_session_record.wolc_authaccounts__user__id, ('sudo',)
+            _auth_authsession_session_record.wolc_authaccounts__user__id, ('sudo',),
+            session_id=_auth_authsession_session_record.wolc_authsession__session__id,
         )
         if targetUser_id is None:
             flask.flash(f'ERROR: `user_id` must be provided for delete operations: ({targetUser_id=}).')
@@ -1049,11 +1062,13 @@ class BlueprintContext:
             targetUser_id = None
         caller_user_id = _auth_authsession_session_record.wolc_authaccounts__user__id
         caller_is_super_auth = self.dbModelContext.authaccounts_user_allowPrivilege_read(
-            caller_user_id, ('sudo',)
+            caller_user_id, ('sudo',),
+            session_id=_auth_authsession_session_record.wolc_authsession__session__id,
         )
         group_users_update_allow = self.dbModelContext.authaccounts_user_allowPrivilege_read(
             caller_user_id,
             PRIVILEGE_GROUPS_UPDATE_USERS_PATH,
+            session_id=_auth_authsession_session_record.wolc_authsession__session__id,
         )
         caller_can_edit_user_info = (
             caller_is_super_auth
@@ -1143,7 +1158,8 @@ class BlueprintContext:
             traceback.print_exc()
             targetUser_id = None
         caller_is_super_auth = self.dbModelContext.authaccounts_user_allowPrivilege_read(
-            _auth_authsession_session_record.wolc_authaccounts__user__id, ('sudo',)
+            _auth_authsession_session_record.wolc_authaccounts__user__id, ('sudo',),
+            session_id=_auth_authsession_session_record.wolc_authsession__session__id,
         )
         if targetUser_id is None:
             flask.flash(f'`user_id` must be provided to reset a password ({targetUser_id=}).')
@@ -1198,11 +1214,13 @@ class BlueprintContext:
         flaskResponse = flask.make_response()
         caller_user_id = _auth_authsession_session_record.wolc_authaccounts__user__id
         caller_is_super_auth = self.dbModelContext.authaccounts_user_allowPrivilege_read(
-            caller_user_id, ('sudo',)
+            caller_user_id, ('sudo',),
+            session_id=_auth_authsession_session_record.wolc_authsession__session__id,
         )
         group_users_update_allow = self.dbModelContext.authaccounts_user_allowPrivilege_read(
             caller_user_id,
             PRIVILEGE_GROUPS_UPDATE_USERS_PATH,
+            session_id=_auth_authsession_session_record.wolc_authsession__session__id,
         )
         if not caller_is_super_auth and not group_users_update_allow:
             flask.flash('Access denied. This account may not view administrator accounts.')

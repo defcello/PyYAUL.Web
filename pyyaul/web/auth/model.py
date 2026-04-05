@@ -57,7 +57,9 @@ def authAccountsRecord_delete(
     Requires the caller to hold the `sudo` privilege.
     """
     caller_user_id = authsession_session_record.wolc_authaccounts__user__id
-    if not dbModelContext.authaccounts_user_allowPrivilege_read(caller_user_id, ('sudo',)):
+    if not dbModelContext.authaccounts_user_allowPrivilege_read(
+            caller_user_id, ('sudo',),
+            session_id=authsession_session_record.wolc_authsession__session__id):
         raise ValueError('ERROR: This operation requires the `sudo` privilege.')
     dbModelContext.authaccounts_user_delete(target_user_id, caller_user_id)
 
@@ -79,7 +81,8 @@ def authAccountsRecord_info_set(
     """
     caller_user_id = authsession_session_record.wolc_authaccounts__user__id
     caller_is_super_auth = dbModelContext.authaccounts_user_allowPrivilege_read(
-        caller_user_id, ('sudo',)
+        caller_user_id, ('sudo',),
+        session_id=authsession_session_record.wolc_authsession__session__id,
     )
     if not caller_is_super_auth and caller_user_id != target_user_id:
         raise ValueError(
@@ -101,7 +104,9 @@ def authAccountsRecord_isSuperauth_set(
     Requires the caller to hold the `sudo` privilege.
     """
     caller_user_id = authsession_session_record.wolc_authaccounts__user__id
-    if not dbModelContext.authaccounts_user_allowPrivilege_read(caller_user_id, ('sudo',)):
+    if not dbModelContext.authaccounts_user_allowPrivilege_read(
+            caller_user_id, ('sudo',),
+            session_id=authsession_session_record.wolc_authsession__session__id):
         raise ValueError('ERROR: This operation requires the `sudo` privilege.')
     if is_super_auth:
         dbModelContext.authaccounts_sudoers_group_user_add(target_user_id, caller_user_id)
