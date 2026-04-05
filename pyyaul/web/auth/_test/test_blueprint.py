@@ -12,6 +12,7 @@ from pyyaul.web.auth.blueprint import (
     BlueprintContext,
     DEFAULT_SECURITY_HEADERS,
     _REQUEST_LOGGER_NAME,
+    flaskApp_proxyFix_apply,
     flaskResponse_securityHeaders_set,
 )
 
@@ -108,6 +109,65 @@ class Test_BlueprintContext_security_headers(TestCase):
 
         self.assertEqual(201, response.status_code)
         self.assertRegex(captured_logs.output[0], r'INFO:pyyaul\.web\.request:GET /probe 201 \d+ms')
+
+
+class Test_flaskApp_proxyFix_apply(TestCase):
+
+    def setUp(self):
+        self.app = flask.Flask(__name__)
+        self.app.secret_key = 'testing'
+
+        @self.app.route('/request-meta')
+        def page_request_meta():
+            return flask.jsonify({
+                'remote_addr': flask.request.remote_addr,
+                'scheme': flask.request.scheme,
+                'host': flask.request.host,
+            })
+
+    def test_applies_forwarded_headers_when_trusted_hops_are_configured(self):
+        flaskApp_proxyFix_apply(self.app, {
+            'x_for': 1,
+            'x_proto': 1,
+            'x_host': 1,
+        })
+
+        response = self.app.test_client().get(
+            '/request-meta',
+            headers={
+                'X-Forwarded-For': '203.0.113.9',
+                'X-Forwarded-Proto': 'https',
+                'X-Forwarded-Host': 'example.com',
+            },
+            environ_overrides={'REMOTE_ADDR': '10.0.0.5', 'HTTP_HOST': 'internal-proxy'},
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual('203.0.113.9', response.json['remote_addr'])
+        self.assertEqual('https', response.json['scheme'])
+        self.assertEqual('example.com', response.json['host'])
+
+    def test_leaves_request_metadata_unchanged_when_disabled(self):
+        flaskApp_proxyFix_apply(self.app, {'x_for': 0, 'x_proto': 0, 'x_host': 0})
+
+        response = self.app.test_client().get(
+            '/request-meta',
+            headers={
+                'X-Forwarded-For': '203.0.113.9',
+                'X-Forwarded-Proto': 'https',
+                'X-Forwarded-Host': 'example.com',
+            },
+            environ_overrides={'REMOTE_ADDR': '10.0.0.5', 'HTTP_HOST': 'internal-proxy'},
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual('10.0.0.5', response.json['remote_addr'])
+        self.assertEqual('http', response.json['scheme'])
+        self.assertEqual('internal-proxy', response.json['host'])
+
+    def test_rejects_invalid_trusted_hop_values(self):
+        with self.assertRaisesRegex(ValueError, 'Invalid ProxyFix setting'):
+            flaskApp_proxyFix_apply(self.app, {'x_for': 'abc'})
 
 
 class Test__UserRateLimiter(TestCase):

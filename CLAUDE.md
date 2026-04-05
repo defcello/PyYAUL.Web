@@ -46,3 +46,27 @@ No `pip install` required; no `pyproject.toml`.
 
 - `skilltrails-admin`: `from pyyaul.web.auth.blueprint import BlueprintContext`
 - `skilltrails-initdb`: indirect (via skilltrails-admin imports)
+
+## Reverse Proxy Deployments
+
+`BlueprintContext` uses `flask.request.remote_addr` for login IP rate limiting
+and login audit logging. Consumer apps deployed behind a reverse proxy must
+apply `flaskApp_proxyFix_apply(app, cfgGet('FLASK', 'PROXY_FIX', {}))` before
+registering the blueprint so forwarded client IPs are trusted correctly.
+
+Use a `cfg.json` shape like:
+
+```json
+{
+  "FLASK": {
+    "PROXY_FIX": {
+      "x_for": 1,
+      "x_proto": 1,
+      "x_host": 1
+    }
+  }
+}
+```
+
+`x_for` must match the exact number of trusted proxy hops. Setting it higher
+than the real deployment topology allows spoofed forwarded headers.

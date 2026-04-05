@@ -11,6 +11,7 @@ from pyyaul.db.orm import ORM
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
 import flask
 import inspect
 import json
@@ -90,6 +91,38 @@ _IP_RATE_MAX_ATTEMPTS = 20      # max login attempts per IP per window
 _USER_RATE_LIMIT_RESPONSE_MESSAGE = 'Too many requests. Please try again later.'
 _AUTH_POST_RATE_MAX_REQUESTS = 10
 _AUTH_POST_RATE_WINDOW_SECONDS = 60
+
+
+def flaskApp_proxyFix_apply(app :flask.Flask, proxy_fix_config :dict|None =None) -> flask.Flask:
+    """
+    Wraps `app.wsgi_app` in Werkzeug's `ProxyFix` middleware when trusted proxy
+    hop counts are configured.
+
+    `proxy_fix_config` is expected to come from deployment config such as
+    `cfg.json`, for example:
+
+        {
+            'x_for': 1,
+            'x_proto': 1,
+            'x_host': 1,
+        }
+
+    Each value must match the exact number of trusted proxy hops in front of
+    the app. Overstating these counts can allow spoofed forwarded headers.
+    """
+    proxy_fix_config = {} if proxy_fix_config is None else dict(proxy_fix_config)
+    trusted_hops = {}
+    for key in ('x_for', 'x_proto', 'x_host', 'x_port', 'x_prefix'):
+        value = proxy_fix_config.get(key, 0)
+        if value in (None, ''):
+            value = 0
+        try:
+            trusted_hops[key] = max(0, int(value))
+        except (TypeError, ValueError) as e:
+            raise ValueError(f'ERROR: Invalid ProxyFix setting for `{key}`: {value!r}.') from e
+    if any(trusted_hops.values()):
+        app.wsgi_app = ProxyFix(app.wsgi_app, **trusted_hops)
+    return app
 
 
 def _base64url_encode(value :bytes|bytearray|memoryview|None) -> str:

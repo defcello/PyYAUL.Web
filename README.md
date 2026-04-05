@@ -43,7 +43,7 @@ sys.path.append(str(_ROOT / 'PyYAUL.Web'))
 ```python
 from pyyaul.web.auth.db.schema.v0 import SchemaV0_Base
 from pyyaul.web.auth.db.model import DBModelContext
-from pyyaul.web.auth.blueprint import BlueprintContext
+from pyyaul.web.auth.blueprint import BlueprintContext, flaskApp_proxyFix_apply
 
 # 1. Define your schema (parameterized by PostgreSQL schema names)
 class MySchema(SchemaV0_Base):
@@ -53,10 +53,34 @@ class MySchema(SchemaV0_Base):
 # 2. Wire up the DB context
 ctx = DBModelContext(orm_ro, orm_rw, sessions_orm_ro, sessions_orm_rw, MySchema())
 
-# 3. Register the Flask blueprint
+# 3. Trust forwarded headers if the app runs behind a reverse proxy
+flaskApp_proxyFix_apply(app, cfgGet('FLASK', 'PROXY_FIX', {}))
+
+# 4. Register the Flask blueprint
 blueprint_ctx = BlueprintContext('myapp', ctx, ...)
 app.register_blueprint(blueprint_ctx.blueprint)
 ```
+
+If your app is deployed behind nginx, an AWS load balancer, Heroku, or another
+reverse proxy, configure Werkzeug `ProxyFix` before registering the blueprint so
+`flask.request.remote_addr` reflects the real client IP for login rate limiting
+and audit logs:
+
+```json
+{
+  "FLASK": {
+    "PROXY_FIX": {
+      "x_for": 1,
+      "x_proto": 1,
+      "x_host": 1
+    }
+  }
+}
+```
+
+Set `x_for` to the exact number of trusted proxy hops in front of the app.
+Setting it higher than your real proxy chain allows spoofed `X-Forwarded-For`
+headers and undermines IP-based protections.
 
 Protected POST handlers can also opt into per-user throttling:
 
