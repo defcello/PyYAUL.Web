@@ -28,6 +28,8 @@ DEFAULT_SECURITY_HEADERS = {
     'Content-Security-Policy': "default-src 'self'",
     'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
 }
+_REQUEST_LOGGER_NAME = 'pyyaul.web.request'
+_REQUEST_START_TIME_KEY = '_pyyaul_request_start_time'
 
 
 PRIVILEGE_GROUPS_PATH = ('sudo', 'groups')
@@ -232,6 +234,7 @@ class BlueprintContext:
         self.dbModelContext = dbModelContext
         self.password_min_length = password_min_length
         self.security_headers = {} if security_headers is None else dict(security_headers)
+        self.blueprint.record_once(self._app_hooks_register)
         self.blueprint.after_request(self._response_security_headers_set)
         self.blueprint.route('/index', methods=['POST', 'GET'])(self.page_index)
         self.blueprint.route('/login', methods=['POST', 'GET'])(self.page_login)
@@ -252,6 +255,34 @@ class BlueprintContext:
 
     def _response_security_headers_set(self, flaskResponse):
         return flaskResponse_securityHeaders_set(flaskResponse, self.security_headers)
+
+    def _app_hooks_register(self, setup_state):
+        app = setup_state.app
+        request_logging_installed = app.extensions.setdefault('pyyaul.web.request_logging', False)
+        if request_logging_installed:
+            return
+        app.before_request(self._requestLog_start)
+        app.after_request(self._requestLog_finish)
+        app.extensions['pyyaul.web.request_logging'] = True
+
+    def _requestLog_start(self):
+        setattr(flask.g, _REQUEST_START_TIME_KEY, time.perf_counter())
+
+    def _requestLog_finish(self, flaskResponse):
+        start_time = getattr(flask.g, _REQUEST_START_TIME_KEY, None)
+        if hasattr(flask.g, _REQUEST_START_TIME_KEY):
+            delattr(flask.g, _REQUEST_START_TIME_KEY)
+        if start_time is None:
+            return flaskResponse
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        logging.getLogger(_REQUEST_LOGGER_NAME).info(
+            '%s %s %d %dms',
+            flask.request.method,
+            flask.request.path,
+            flaskResponse.status_code,
+            duration_ms,
+        )
+        return flaskResponse
 
     @staticmethod
     def _authSessionRequired_static(func):

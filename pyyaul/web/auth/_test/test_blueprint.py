@@ -10,6 +10,7 @@ from pyyaul.web.auth.blueprint import (
     _UserRateLimiter,
     BlueprintContext,
     DEFAULT_SECURITY_HEADERS,
+    _REQUEST_LOGGER_NAME,
     flaskResponse_securityHeaders_set,
 )
 
@@ -89,6 +90,23 @@ class Test_BlueprintContext_security_headers(TestCase):
             response.headers['Content-Security-Policy'],
         )
         self.assertEqual('nosniff', response.headers['X-Content-Type-Options'])
+
+    def test_registers_request_logging_for_app_routes(self):
+        app = flask.Flask(__name__)
+        app.secret_key = 'testing'
+        blueprintContext = BlueprintContext('auth', __name__, MagicMock())
+
+        @app.route('/probe')
+        def page_probe():
+            return flask.make_response('created', 201)
+
+        app.register_blueprint(blueprintContext.blueprint)
+
+        with self.assertLogs(_REQUEST_LOGGER_NAME, level='INFO') as captured_logs:
+            response = app.test_client().get('/probe')
+
+        self.assertEqual(201, response.status_code)
+        self.assertRegex(captured_logs.output[0], r'INFO:pyyaul\.web\.request:GET /probe 201 \d+ms')
 
 
 class Test__UserRateLimiter(TestCase):
