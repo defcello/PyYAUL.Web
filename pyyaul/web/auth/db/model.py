@@ -21,6 +21,7 @@ from inspect import isclass
 from pyyaul.db.orm import ORM
 from sqlalchemy import and_, insert, inspect, or_, select, text, update
 import json
+import logging
 import secrets
 import sqlalchemy
 import traceback
@@ -342,7 +343,10 @@ class DBModelContext:
                     },
                 )
         except Exception as e:
-            print(f'ERROR writing privilege log: {session_id=}; {privilege_id=}; {allowed=}; {allow_rule_id=}; {e}')
+            logging.warning(
+                'privilege log write failed: session_id=%s privilege_id=%s allowed=%s allow_rule_id=%s error=%s',
+                session_id, privilege_id, allowed, allow_rule_id, e,
+            )
 
     def authaccounts_user_create(
             self,
