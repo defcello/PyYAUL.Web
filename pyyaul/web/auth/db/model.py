@@ -2026,3 +2026,20 @@ class DBModelContext:
             self.dbSchema.matches(self.dbORM_authAccounts_RO.engine)
             and self.dbSchema.matches(self.dbORM_authSessions_RO.engine)
         )
+
+    def db_update(self) ->None:
+        """
+        Applies any pending schema migrations.
+
+        The RW database user must have DDL privileges such as `CREATE TABLE`,
+        `ALTER TABLE`, and `CREATE SCHEMA`.
+        """
+        try:
+            self.dbSchema.update(self.dbORM_authAccounts_RW.engine)
+            self.dbSchema.update(self.dbORM_authSessions_RW.engine)
+        except sqlalchemy.exc.SQLAlchemyError as e:
+            raise RuntimeError(
+                'ERROR Failed to update the auth database schema. '
+                'The RW database user must have DDL privileges '
+                '(`CREATE TABLE`, `ALTER TABLE`, `CREATE SCHEMA`).'
+            ) from e

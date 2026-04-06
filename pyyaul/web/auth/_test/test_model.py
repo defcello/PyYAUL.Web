@@ -280,3 +280,49 @@ class Test_DBModelContext_authaccounts_user_login_ip_attempts_recent_count(TestC
 		params = session.execute.call_args.args[1]
 		self.assertNotIn('loginmethod_id = :loginmethod_id', sql)
 		self.assertEqual({'ip': '203.0.113.9', 'window_seconds': 60}, params)
+
+
+class Test_DBModelContext_db_update(TestCase):
+
+	def setUp(self):
+		from pyyaul.web.auth.db.model import DBModelContext
+		self.DBModelContext = DBModelContext
+
+	def _make_ctx(self):
+		accounts_rw = MagicMock()
+		sessions_rw = MagicMock()
+		schema = MagicMock()
+		ctx = self.DBModelContext(
+			MagicMock(),
+			accounts_rw,
+			MagicMock(),
+			sessions_rw,
+			schema,
+		)
+		return ctx, schema, accounts_rw, sessions_rw
+
+	def test_updates_both_rw_engines(self):
+		ctx, schema, accounts_rw, sessions_rw = self._make_ctx()
+
+		ctx.db_update()
+
+		schema.update.assert_has_calls([
+			call(accounts_rw.engine),
+			call(sessions_rw.engine),
+		])
+
+	def test_wraps_sqlalchemy_errors_with_ddl_guidance(self):
+		import sqlalchemy
+
+		ctx, schema, _accounts_rw, _sessions_rw = self._make_ctx()
+		schema.update.side_effect = sqlalchemy.exc.ProgrammingError(
+			'ALTER TABLE',
+			{},
+			RuntimeError('permission denied'),
+		)
+
+		with self.assertRaises(RuntimeError) as raised:
+			ctx.db_update()
+
+		self.assertIn('DDL privileges', str(raised.exception))
+		self.assertIn('CREATE TABLE', str(raised.exception))
