@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+    <div class="container py-4" style="max-width: 900px;">
+        <div class="text-start mb-4">
+            <h1 class="mb-1">New Action Item</h1>
+            {% if finding %}
+                <p class="text-muted mb-0">Linked to finding "{{ finding.title }}" in review "{{ review.title }}".</p>
+            {% elif review %}
+                <p class="text-muted mb-0">Review context: {{ review.title }}</p>
+            {% else %}
+                <p class="text-muted mb-0">Capture follow-up work, ownership notes, and any GitHub issue linkage.</p>
+            {% endif %}
+        </div>
+        <div class="card">
+            <div class="card-body">
+                <form method="post">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                    {% if selected_finding_id %}
+                        <input type="hidden" name="finding_id" value="{{ selected_finding_id }}" />
+                    {% endif %}
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <label class="form-label" for="title">Title</label>
+                            <input class="form-control" id="title" name="title" required type="text" />
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label" for="description">Description</label>
+                            <textarea class="form-control" id="description" name="description" required rows="5"></textarea>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label" for="github_issue_url">GitHub Issue URL</label>
+                            <input class="form-control" id="github_issue_url" name="github_issue_url" type="url" placeholder="https://github.com/owner/repo/issues/123" />
+                        </div>
+                    </div>
+                    <div class="d-flex justify-content-between mt-4">
+                        <a class="btn btn-outline-secondary" href="{% if finding %}{{ url_for('compliance.page_reviewDetail', review_id=review.id) }}{% else %}{{ url_for('compliance.page_actionItemList') }}{% endif %}">Cancel</a>
+                        <button class="btn btn-primary" type="submit">Create Action Item</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+{% endblock %}

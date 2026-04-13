@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block content %}
+    <div class="container py-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <div class="text-start">
+                <h1 class="mb-1">Compliance Reviews</h1>
+                <p class="text-muted mb-0">Track review scope, findings, and downstream action items.</p>
+            </div>
+            {% if caller_can_write %}
+                <a class="btn btn-primary" href="{{ url_for('compliance.page_reviewCreate') }}">New Review</a>
+            {% endif %}
+        </div>
+
+        <div class="card">
+            <div class="table-responsive">
+                <table class="table table-striped align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th>Review</th>
+                            <th>Topic</th>
+                            <th>Date</th>
+                            <th>Status</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for review in reviews %}
+                            <tr>
+                                <td>
+                                    <strong>{{ review.title }}</strong>
+                                    <div class="text-muted small">{{ review.scope|truncate(120) }}</div>
+                                </td>
+                                <td>{{ review.topic }}</td>
+                                <td>{{ review.review_date }}</td>
+                                <td><span class="badge text-bg-secondary">{{ review.status }}</span></td>
+                                <td class="text-end">
+                                    <a class="btn btn-sm btn-outline-primary" href="{{ url_for('compliance.page_reviewDetail', review_id=review.id) }}">Open</a>
+                                </td>
+                            </tr>
+                        {% else %}
+                            <tr>
+                                <td colspan="5" class="text-center text-muted py-4">No compliance reviews recorded yet.</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+{% endblock %}

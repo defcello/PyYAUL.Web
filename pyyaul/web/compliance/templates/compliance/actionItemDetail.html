@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block content %}
+    <div class="container py-4">
+        <div class="d-flex justify-content-between align-items-start mb-4">
+            <div class="text-start">
+                <h1 class="mb-1">{{ action_item.title }}</h1>
+                <p class="text-muted mb-2">Status: {{ action_item.status }}</p>
+                <p class="mb-0">{{ action_item.description }}</p>
+            </div>
+            <div class="d-flex gap-2">
+                <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('compliance.page_actionItemList') }}">All Action Items</a>
+                {% if caller_can_write %}
+                    <a class="btn btn-outline-primary btn-sm" href="{{ url_for('compliance.page_actionItemUpdate', action_item_id=action_item.id) }}">Add Update</a>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="row g-4">
+            <div class="col-lg-5">
+                <div class="card h-100">
+                    <div class="card-header">Details</div>
+                    <div class="card-body text-start">
+                        <dl class="row mb-0">
+                            <dt class="col-sm-4">Created</dt>
+                            <dd class="col-sm-8">{{ action_item.created }}</dd>
+                            <dt class="col-sm-4">GitHub Issue</dt>
+                            <dd class="col-sm-8">
+                                {% if action_item.github_issue_url %}
+                                    <a href="{{ action_item.github_issue_url }}" target="_blank" rel="noreferrer">{{ action_item.github_issue_url }}</a>
+                                {% else %}
+                                    <span class="text-muted">None linked</span>
+                                {% endif %}
+                            </dd>
+                            {% if review %}
+                                <dt class="col-sm-4">Review</dt>
+                                <dd class="col-sm-8">
+                                    <a href="{{ url_for('compliance.page_reviewDetail', review_id=review.id) }}">{{ review.title }}</a>
+                                </dd>
+                            {% endif %}
+                            {% if finding %}
+                                <dt class="col-sm-4">Finding</dt>
+                                <dd class="col-sm-8">{{ finding.title }}</dd>
+                            {% endif %}
+                        </dl>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-7">
+                <div class="card h-100">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span>Updates</span>
+                        {% if caller_can_write and action_item.status != 'resolved' %}
+                            <form method="post" action="{{ url_for('compliance.page_actionItemResolve', action_item_id=action_item.id) }}" class="d-flex gap-2">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                                <input class="form-control form-control-sm" name="notes" placeholder="Resolution note (optional)" type="text" />
+                                <button class="btn btn-success btn-sm" type="submit">Resolve</button>
+                            </form>
+                        {% endif %}
+                    </div>
+                    <div class="card-body">
+                        <ul class="list-group">
+                            {% for update in action_item_updates %}
+                                <li class="list-group-item text-start">
+                                    <div class="d-flex justify-content-between">
+                                        <strong>{{ update.update_type }}</strong>
+                                        <small class="text-muted">{{ update.created }}</small>
+                                    </div>
+                                    <div>{{ update.notes }}</div>
+                                </li>
+                            {% else %}
+                                <li class="list-group-item text-muted">No updates logged yet.</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock %}

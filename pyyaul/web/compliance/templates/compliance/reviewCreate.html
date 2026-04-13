@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+    <div class="container py-4" style="max-width: 900px;">
+        <div class="text-start mb-4">
+            <h1 class="mb-1">New Compliance Review</h1>
+            <p class="text-muted mb-0">Capture the audit scope first, then add findings and follow-up work.</p>
+        </div>
+        <div class="card">
+            <div class="card-body">
+                <form method="post">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                    <div class="row g-3">
+                        <div class="col-md-8">
+                            <label class="form-label" for="title">Title</label>
+                            <input class="form-control" id="title" name="title" required type="text" />
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label" for="review_date">Review Date</label>
+                            <input class="form-control" id="review_date" name="review_date" required type="date" value="{{ today_iso }}" />
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label" for="topic">Topic</label>
+                            <select class="form-select" id="topic" name="topic" required>
+                                {% for topic in review_topics %}
+                                    <option value="{{ topic }}">{{ topic }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label" for="scope">Scope</label>
+                            <textarea class="form-control" id="scope" name="scope" required rows="4"></textarea>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label" for="notes">Notes</label>
+                            <textarea class="form-control" id="notes" name="notes" rows="4"></textarea>
+                        </div>
+                    </div>
+                    <div class="d-flex justify-content-between mt-4">
+                        <a class="btn btn-outline-secondary" href="{{ url_for('compliance.page_reviewList') }}">Cancel</a>
+                        <button class="btn btn-primary" type="submit">Create Review</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+{% endblock %}
