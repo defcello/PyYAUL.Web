@@ -20,6 +20,14 @@ pyyaul/web/auth/
         schema/
             v0.py               — SchemaV0_Base (parameterized by schema names), SchemaV0 (defaults)
             vLatest.py          — alias for latest version
+pyyaul/web/compliance/
+    blueprint.py            — BlueprintContext: Flask routes for reviews/findings/action items
+    cli.py                  — ComplianceCLIBase: standalone CLI (no Flask) for log entries
+    db/
+        model.py            — DBModelContext: CRUD methods for compliance tables
+        schema/
+            v0.py           — ComplianceSchemaV0_Base (parameterized by schema name)
+            vLatest.py      — alias for latest version
 test.py                         — test runner; adds PyYAUL.Base + PyYAUL.DB to sys.path
 ```
 
@@ -82,3 +90,8 @@ Compliance-oriented consumers keep their Flask routes in a subpackage such as
 `modules/compliance/`, with route registration handled in `blueprint.py` and
 database access in `db/model.py`. Shared schema base classes live in PyYAUL.Web,
 while the concrete `wolc_compliance` schema is instantiated by `skilltrails-initdb`.
+
+The module also provides `pyyaul/web/compliance/cli.py` — a reusable
+`ComplianceCLIBase` class (no Flask dependency) that consumers can wrap to
+create a standalone CLI script for adding log entries directly to the database.
+See `skilltrails-admin/log_compliance.py` for the SkillTrails-configured wrapper.
