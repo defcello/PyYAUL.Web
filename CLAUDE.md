@@ -75,3 +75,10 @@ Use a `cfg.json` shape like:
 
 `x_for` must match the exact number of trusted proxy hops. Setting it higher
 than the real deployment topology allows spoofed forwarded headers.
+
+## Compliance Module Pattern
+
+Compliance-oriented consumers keep their Flask routes in a subpackage such as
+`modules/compliance/`, with route registration handled in `blueprint.py` and
+database access in `db/model.py`. Shared schema base classes live in PyYAUL.Web,
+while the concrete `wolc_compliance` schema is instantiated by `skilltrails-initdb`.
