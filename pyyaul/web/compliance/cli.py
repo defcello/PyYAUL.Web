@@ -8,23 +8,8 @@ No Flask dependency — works standalone from any script that can reach the DB.
 import argparse
 import datetime
 import sys
-from urllib.parse import urlparse
 
-
-def _parse_github_url(raw_url: str):
-    """Return (github_repo, github_issue_number, github_issue_url) from a GitHub issue URL."""
-    url = (raw_url or '').strip()
-    if url == '':
-        return (None, None, None)
-    parsed = urlparse(url)
-    path_parts = [part for part in parsed.path.split('/') if part]
-    if parsed.netloc.lower() == 'github.com' and len(path_parts) >= 4 and path_parts[2] == 'issues':
-        try:
-            issue_number = int(path_parts[3])
-        except ValueError:
-            issue_number = None
-        return (f'{path_parts[0]}/{path_parts[1]}', issue_number, url)
-    return (None, None, url)
+from pyyaul.web.compliance._utils import _parse_github_issue_url
 
 
 class ComplianceCLIBase:
@@ -148,7 +133,7 @@ class ComplianceCLIBase:
                 print(f'  title:       {finding_title}')
                 print(f'  description: {finding_description}')
                 if parsed.action_item_title:
-                    github_repo, github_issue_number, github_issue_url = _parse_github_url(
+                    github_repo, github_issue_number, github_issue_url = _parse_github_issue_url(
                         parsed.github_issue_url or '')
                     print(f'[DRY RUN] Would create action item:')
                     print(f'  title:       {parsed.action_item_title}')
@@ -186,7 +171,7 @@ class ComplianceCLIBase:
             print(f'  Created finding #{finding.id}: [{parsed.severity}] {finding_title}')
 
             if parsed.action_item_title:
-                github_repo, github_issue_number, github_issue_url = _parse_github_url(
+                github_repo, github_issue_number, github_issue_url = _parse_github_issue_url(
                     parsed.github_issue_url or '')
                 action_item = self.dbModelContext.action_item_create(
                     title=parsed.action_item_title,

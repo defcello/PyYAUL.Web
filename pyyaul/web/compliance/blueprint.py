@@ -3,9 +3,10 @@ Reusable Flask blueprint for lightweight compliance review and action-item track
 """
 
 from datetime import date
-from urllib.parse import urlparse
 
 import flask
+
+from pyyaul.web.compliance._utils import _parse_github_issue_url
 
 
 PRIVILEGE_COMPLIANCE_PATH = ('sudo', 'compliance')
@@ -101,20 +102,6 @@ class BlueprintContext:
         if value == '':
             raise ValueError(f'ERROR `{field_name}` must be provided.')
         return value
-
-    def _github_issue_details_parse(self, raw_url: str):
-        url = (raw_url or '').strip()
-        if url == '':
-            return (None, None, None)
-        parsed = urlparse(url)
-        path_parts = [part for part in parsed.path.split('/') if part]
-        if parsed.netloc.lower() == 'github.com' and len(path_parts) >= 4 and path_parts[2] == 'issues':
-            try:
-                issue_number = int(path_parts[3])
-            except ValueError:
-                issue_number = None
-            return (f'{path_parts[0]}/{path_parts[1]}', issue_number, url)
-        return (None, None, url)
 
     def _template_context_base(self, authsession_session_record):
         return {
@@ -259,7 +246,7 @@ class BlueprintContext:
         if flask.request.method == 'POST':
             title = self._field_required('title', flask.request.form.get('title'))
             description = self._field_required('description', flask.request.form.get('description'))
-            github_repo, github_issue_number, github_issue_url = self._github_issue_details_parse(
+            github_repo, github_issue_number, github_issue_url = _parse_github_issue_url(
                 flask.request.form.get('github_issue_url', '')
             )
             action_item_record = self.dbModelContext.action_item_create(
